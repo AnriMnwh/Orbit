@@ -365,10 +365,10 @@ static void face_build(face_t *f, lv_obj_t *root, uint8_t face, bool ambient)
 
     /* On the charger, the resting face also shows how full the battery is. */
     if (ambient && S.batt.plugged) {
-        f->charge_arc = ui_arc(root, 446, 6, C_SURF, C_GOOD, 270, 360);
+        f->charge_arc = ui_arc(root, 456, 6, C_SURF, C_GOOD, 270, 360);
         lv_obj_center(f->charge_arc);
         f->charge_text = ui_label(root, "", F20, C_GOOD);
-        lv_obj_align(f->charge_text, LV_ALIGN_BOTTOM_MID, 0, -22);
+        lv_obj_align(f->charge_text, LV_ALIGN_BOTTOM_MID, 0, -20);
     }
     face_refresh(f);
 }
@@ -464,8 +464,8 @@ static void aod_freed(lv_event_t *e)
 
 static void aod_shift(aod_t *a)
 {
-    static const int8_t dx[] = {0, 8, -5, 10, -10, 4, -8, 6};
-    static const int8_t dy[] = {0, -6, 8, 5, -8, 10, 4, -10};
+    static const int8_t dx[] = {0, 3, -2, 3, -3, 2, -3, 2};
+    static const int8_t dy[] = {0, -2, 3, 2, -3, 3, 2, -3};
     lv_obj_set_style_translate_x(a->face.root, dx[a->minutes % 8], 0);
     lv_obj_set_style_translate_y(a->face.root, dy[a->minutes % 8], 0);
 }
