@@ -487,6 +487,8 @@ static bool display_start(void)
         .touch_flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
     };
     cfg.lv_adapter_cfg.task_stack_size = 14 * 1024; /* the UI draws a lot by hand */
+    cfg.lv_adapter_cfg.task_core_id = 1;            /* keep Core 0 dedicated to Wi-Fi/BLE */
+    cfg.lv_adapter_cfg.task_min_delay_ms = 5;       /* always yield enough to feed IDLE1 WDT */
     if (esp_lv_adapter_init(&cfg.lv_adapter_cfg) != ESP_OK) return false;
 
     const int buf_lines = 20;
