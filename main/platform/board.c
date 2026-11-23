@@ -9,6 +9,7 @@
 #include <sys/time.h>
 
 #include "bsp/esp-bsp.h"
+#include "bsp/touch.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_event.h"
@@ -464,6 +465,66 @@ static void inputs_task(void *arg)
 
 /* ------------------------------------------------------------------- main */
 
+/* CO5300 requires even start coordinates and odd end coordinates. */
+static void display_rounder_cb(lv_event_t *e)
+{
+    lv_area_t *area = (lv_area_t *)lv_event_get_param(e);
+    area->x1 = (area->x1 >> 1) << 1;
+    area->y1 = (area->y1 >> 1) << 1;
+    area->x2 = ((area->x2 >> 1) << 1) + 1;
+    area->y2 = ((area->y2 >> 1) << 1) + 1;
+}
+
+/* Starts display + touch with an internal DMA draw buffer (20 lines = 18.6 KB)
+ * instead of Waveshare's 50-line PSRAM buffer, which forced spi_master to
+ * allocate a 46.6 KB internal DMA bounce buffer on every flush (OOM with Wi-Fi + BLE). */
+static bool display_start(void)
+{
+    bsp_display_cfg_t cfg = {
+        .lv_adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
+        .rotation = ESP_LV_ADAPTER_ROTATE_0,
+        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
+        .touch_flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
+    };
+    cfg.lv_adapter_cfg.task_stack_size = 12 * 1024; /* the UI draws a lot by hand */
+    if (esp_lv_adapter_init(&cfg.lv_adapter_cfg) != ESP_OK) return false;
+
+    const int buf_lines = 20;
+    const bsp_display_config_t panel_cfg = {
+        .max_transfer_sz = BSP_LCD_H_RES * buf_lines * BSP_LCD_BITS_PER_PIXEL / 8,
+    };
+    esp_lcd_panel_handle_t panel = NULL;
+    esp_lcd_panel_io_handle_t io = NULL;
+    if (bsp_display_new(&panel_cfg, &panel, &io) != ESP_OK) return false;
+
+    esp_lv_adapter_display_config_t disp_cfg = {
+        .panel = panel,
+        .panel_io = io,
+        .profile = {
+            .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
+            .rotation = cfg.rotation,
+            .hor_res = BSP_LCD_H_RES,
+            .ver_res = BSP_LCD_V_RES,
+            .buffer_height = buf_lines,
+            .use_psram = false,
+            .enable_ppa_accel = false,
+            .require_double_buffer = false,
+        },
+        .tear_avoid_mode = cfg.tear_avoid_mode,
+    };
+    lv_display_t *disp = esp_lv_adapter_register_display(&disp_cfg);
+    if (!disp) return false;
+    lv_display_add_event_cb(disp, display_rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+
+    esp_lcd_touch_handle_t tp = NULL;
+    if (bsp_touch_new(&cfg, &tp) != ESP_OK || !tp) return false;
+    const esp_lv_adapter_touch_config_t touch_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, tp);
+    if (!esp_lv_adapter_register_touch(&touch_cfg)) return false;
+
+    bsp_display_brightness_init();
+    return esp_lv_adapter_start() == ESP_OK;
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -477,14 +538,7 @@ void app_main(void)
     esp_pm_config_t pm = {.max_freq_mhz = 240, .min_freq_mhz = 80, .light_sleep_enable = false};
     esp_pm_configure(&pm);
 
-    bsp_display_cfg_t cfg = {
-        .lv_adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG(),
-        .rotation = ESP_LV_ADAPTER_ROTATE_0,
-        .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
-        .touch_flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
-    };
-    cfg.lv_adapter_cfg.task_stack_size = 14 * 1024; /* the UI draws a lot by hand */
-    if (!bsp_display_start_with_config(&cfg)) {
+    if (!display_start()) {
         ESP_LOGE(TAG, "display failed to start");
         return;
     }
