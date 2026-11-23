@@ -258,6 +258,7 @@ typedef struct {
     uint8_t setup_done;       /* the first-boot setup has been completed */
     uint8_t volume;           /* speaker volume, 0..100 */
     uint8_t previews;         /* new notifications take over the screen briefly */
+    uint8_t charge_limit;     /* battery health: cap charging at 80% */
     uint16_t step_goal;
 } settings_t;
 

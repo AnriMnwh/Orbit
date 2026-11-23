@@ -56,6 +56,11 @@ void svc_restart(void)
     puts("[sim] restart");
 }
 
+void svc_charge_limit(bool on)
+{
+    LV_UNUSED(on);
+}
+
 void svc_storage_info(uint32_t *total_kb, uint32_t *free_kb)
 {
     *total_kb = 10176, *free_kb = 8420;

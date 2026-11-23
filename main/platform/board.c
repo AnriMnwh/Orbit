@@ -239,6 +239,42 @@ void svc_memory_info(uint32_t *internal_kb, uint32_t *external_kb)
 
 /* -------------------------------------------------------- power chip poll */
 
+#define CHARGE_CAP_STOP 80   /* pause charging at or above this percentage */
+#define CHARGE_CAP_RESUME 75 /* resume charging once it drops here (hysteresis) */
+
+static volatile bool charge_limit_on;
+static volatile bool charge_limit_dirty = true;
+
+void svc_charge_limit(bool on)
+{
+    charge_limit_on = on;
+    charge_limit_dirty = true;
+}
+
+/* Enforces the 80% battery-health cap via AXP2101 register 0x18 bit 1
+ * (CELL_BATT_CHG_EN). When paused, VBUS still powers the watch directly. */
+static void pmic_charge_enforce(int percent, bool present)
+{
+    if (!pmic || !present) return;
+    uint8_t v = 0;
+    if (reg_read(pmic, 0x18, &v, 1) != ESP_OK) return;
+    bool chg_en = (v & 0x02) != 0;
+    bool want_en = chg_en;
+    if (!charge_limit_on) {
+        want_en = true;
+    } else if (percent >= CHARGE_CAP_STOP) {
+        want_en = false;
+    } else if (percent >= 0 && percent <= CHARGE_CAP_RESUME) {
+        want_en = true;
+    }
+    if (want_en != chg_en) {
+        uint8_t next = want_en ? (uint8_t)(v | 0x02) : (uint8_t)(v & ~0x02);
+        if (reg_write(pmic, 0x18, next) == ESP_OK) {
+            ESP_LOGI(TAG, "battery health: charging %s at %d%%", want_en ? "resumed" : "paused (80% cap)", percent);
+        }
+    }
+}
+
 static void battery_apply(void *arg)
 {
     batt_t *b = arg;
@@ -254,13 +290,18 @@ static void battery_read(void)
 {
     uint8_t s1 = 0, s2 = 0, pct = 0;
     if (!pmic || reg_read(pmic, 0x00, &s1, 1) != ESP_OK || reg_read(pmic, 0x01, &s2, 1) != ESP_OK) return;
+    bool present = s1 & 0x08;
+    int percent = present && reg_read(pmic, 0xA4, &pct, 1) == ESP_OK && pct <= 100 ? pct : -1;
+    pmic_charge_enforce(percent, present);
+    /* Re-read status2 after enforcing so the UI reflects paused charging right away. */
+    reg_read(pmic, 0x01, &s2, 1);
+
     batt_t *b = malloc(sizeof(*b));
     if (!b) return;
     memset(b, 0, sizeof(*b));
-    bool present = s1 & 0x08;
     b->plugged = s1 & 0x20;
     b->charging = ((s2 >> 5) & 0x07) == 0x01;
-    b->percent = present && reg_read(pmic, 0xA4, &pct, 1) == ESP_OK && pct <= 100 ? pct : -1;
+    b->percent = percent;
     ui_post(battery_apply, b);
 }
 
@@ -410,6 +451,10 @@ static void inputs_task(void *arg)
         if (since_tap_ms >= 0 && held_ms == 0 && (since_tap_ms += 20) > 300) {
             button_post(BTN_SIDE, PRESS_SHORT);
             since_tap_ms = -1;
+        }
+        if (pmic && charge_limit_dirty) {
+            charge_limit_dirty = false;
+            battery_read();
         }
         if (pmic && n % 8 == 0) pmic_poll();
         if (pmic && n % 500 == 0) battery_read();

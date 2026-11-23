@@ -87,7 +87,7 @@ void notif_clear(void)
 
 /* ---------------------------------------------------------------- settings */
 
-#define CFG_VERSION 4
+#define CFG_VERSION 5
 
 settings_t CFG;
 
@@ -129,11 +129,13 @@ void settings_load(void)
     for (int i = 0; i < TILE_SLOTS; i++) {
         if (CFG.tiles[i] >= TILE_KINDS) CFG.tiles[i] = TILE_NONE;
     }
+    svc_charge_limit(CFG.charge_limit != 0);
 }
 
 void settings_changed(void)
 {
     svc_kv_save("cfg", &CFG, sizeof(CFG));
+    svc_charge_limit(CFG.charge_limit != 0);
     bus_emit(EVT_SETTINGS, NULL);
 }
 

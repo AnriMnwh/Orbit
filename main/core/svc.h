@@ -25,6 +25,7 @@ enum { SND_TAP, SND_NOTIFY, SND_ALARM, SND_OK, SND_ERROR };
 void svc_sound(int id);
 void svc_power_off(void);
 void svc_restart(void);
+void svc_charge_limit(bool on);        /* cap battery charging at 80% for battery health */
 void svc_storage_info(uint32_t *total_kb, uint32_t *free_kb);
 /* Free working memory: the chip's own RAM and the 8 MB external RAM. */
 void svc_memory_info(uint32_t *internal_kb, uint32_t *external_kb);

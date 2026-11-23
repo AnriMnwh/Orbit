@@ -603,13 +603,16 @@ static void battery_page(void)
     page_title("Battery");
     if (S.batt.percent < 0) snprintf(buf, sizeof(buf), "Unknown");
     else snprintf(buf, sizeof(buf), "%d%%", S.batt.percent);
-    row(&ic_bolt_28, S.batt.charging ? "Charging" : (S.batt.plugged ? "Plugged in" : "On battery"), buf, S.batt.charging, NULL,
-        NULL);
+    const char *state = S.batt.charging ? "Charging"
+                      : (S.batt.plugged ? (CFG.charge_limit && S.batt.percent >= 80 ? "Capped at 80%" : "Plugged in")
+                                        : "On battery");
+    row(&ic_bolt_28, state, buf, S.batt.charging, NULL, NULL);
+    row(&ic_heart_28, "Charge limit 80%", on_off(CFG.charge_limit), CFG.charge_limit, toggle, &CFG.charge_limit);
     row(&ic_half_28, "Battery saver", on_off(CFG.saver), CFG.saver, toggle, &CFG.saver);
     row(&ic_clock_28, "Always-on", AOD_NAMES[CFG.aod_mode], CFG.aod_mode != AOD_OFF, cycle_aod, NULL);
     snprintf(buf, sizeof(buf), "%d s", CFG.timeout_s);
     row(&ic_timer_28, "Screen timeout", buf, true, cycle_timeout, NULL);
-    note("Battery saver dims the screen and turns off always-on and raise to wake.");
+    note("Charge limit pauses charging at 80% to protect battery health. Battery saver dims the screen and turns off always-on and raise to wake.");
 }
 
 /* -------------------------------------------------------------------- apps */
