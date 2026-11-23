@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit setup</title>
+<style>
+  :root { --bg:#0b0c0f; --card:#17191f; --line:#2a2d36; --text:#f4f5f7; --dim:#969ba7; --accent:#ff7a45; --ok:#4ade80; --bad:#ff5d5d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:20px 16px 60px; }
+  header { display:flex; align-items:center; gap:14px; margin:8px 0 22px; }
+  .dot { width:44px; height:44px; border-radius:50%; border:5px solid var(--accent); flex:none; }
+  h1 { font-size:26px; margin:0; letter-spacing:-.01em; }
+  header p { margin:0; color:var(--dim); font-size:14px; }
+  section { background:var(--card); border-radius:22px; padding:18px; margin-bottom:14px; }
+  h2 { font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); margin:0 0 12px; font-weight:600; }
+  p.note { color:var(--dim); font-size:14px; margin:8px 0 0; }
+  label { display:block; font-size:13px; color:var(--dim); margin:10px 0 4px; }
+  input, select { width:100%; background:#0f1014; color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font:inherit; }
+  input:focus, select:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  button { background:var(--accent); color:#000; border:0; border-radius:999px; padding:11px 20px; font:inherit; font-weight:600; cursor:pointer; margin-top:12px; }
+  button.ghost { background:#252830; color:var(--text); }
+  button:disabled { opacity:.5; }
+  .row { display:flex; gap:10px; } .row > * { flex:1; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:10px; margin-top:12px; }
+  .ph { position:relative; aspect-ratio:1; border-radius:50%; overflow:hidden; background:#000; }
+  .ph img { width:100%; height:100%; object-fit:cover; display:block; }
+  .ph button { position:absolute; inset:auto 0 0 0; margin:0; border-radius:0; padding:5px; font-size:12px; background:rgba(0,0,0,.72); color:#fff; }
+  .macro { border-top:1px solid var(--line); padding:10px 0; }
+  .macro:first-of-type { border-top:0; }
+  .mods { display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; font-size:14px; }
+  .mods label { display:flex; align-items:center; gap:5px; margin:0; color:var(--text); }
+  .mods input { width:auto; }
+  #msg { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:#252830; padding:10px 18px; border-radius:999px; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  #msg.on { opacity:1; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; background:#252830; margin-right:6px; }
+  .pill.ok { color:var(--ok); } .pill.bad { color:var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <header><div class="dot"></div><div><h1>Orbit</h1><p id="summary">Connecting...</p></div></header>
+
+  <section>
+    <h2>Wi-Fi</h2>
+    <div id="wifiState"></div>
+    <label for="ssid">Network</label>
+    <div class="row"><select id="ssid"><option value="">Scanning...</option></select></div>
+    <label for="pass">Password</label>
+    <input id="pass" type="password" autocomplete="off">
+    <div class="row"><button id="joinBtn">Join network</button><button class="ghost" id="scanBtn">Scan again</button></div>
+    <p class="note">The watch joins your home network for photos, maps and the assistant. After it joins, reach this page at <b>http://orbit.local</b>.</p>
+  </section>
+
+  <section>
+    <h2>Photos</h2>
+    <input id="files" type="file" accept="image/*" multiple>
+    <p class="note">Photos are cropped to a circle and resized for the watch before upload. They appear in the Photos app, the photo watch face and the always-on screen.</p>
+    <div class="grid" id="photos"></div>
+  </section>
+
+  <section>
+    <h2>Keys</h2>
+    <p class="note" style="margin-top:0">Fourteen buttons across two pages. The first of each page sits in the middle. Leave a label empty to hide a button.</p>
+    <div id="macros"></div>
+    <button id="macroSave">Save keys</button>
+  </section>
+
+  <section>
+    <h2>Assistant</h2>
+    <div id="aiState"></div>
+    <label for="aiKey">OpenAI API key</label>
+    <input id="aiKey" type="password" autocomplete="off" placeholder="sk-...">
+    <div class="row">
+      <div><label for="aiVoice">Voice</label>
+        <select id="aiVoice"><option>marin</option><option>cedar</option><option>alloy</option><option>ash</option><option>coral</option><option>echo</option><option>nova</option><option>sage</option><option>verse</option></select></div>
+      <div><label for="aiChat">Chat model</label><input id="aiChat" placeholder="gpt-6-luna"></div>
+    </div>
+    <button id="aiSave">Save assistant</button>
+    <p class="note">The key is stored on the watch and is never shown again. Usage is billed to your OpenAI account.</p>
+  </section>
+
+  <section>
+    <h2>Camera</h2>
+    <div id="camState"></div>
+    <label for="camSsid">Camera Wi-Fi name</label>
+    <input id="camSsid" placeholder="S5-XXXXXX">
+    <label for="camPass">Camera Wi-Fi password</label>
+    <input id="camPass" type="password" autocomplete="off">
+    <button id="camSave">Save camera</button>
+    <p class="note">On the LUMIX: Wi-Fi &gt; Wi-Fi Function &gt; New Connection &gt; Remote Shooting &amp; View &gt; Direct. The camera shows its network name and password. The watch leaves your home Wi-Fi while the Camera app is open.</p>
+  </section>
+
+  <section>
+    <h2>Maps</h2>
+    <label for="place">Centre (latitude, longitude)</label>
+    <input id="place" placeholder="-33.8568, 151.2153">
+    <button id="tilesBtn">Save this area for offline use</button>
+    <p class="note" id="tilesState">Downloads about 90 map tiles around the point and remembers it for Sun Times. Map data &copy; OpenStreetMap contributors.</p>
+  </section>
+
+  <section>
+    <h2>Update</h2>
+    <input id="fw" type="file" accept=".bin">
+    <button id="fwBtn">Install firmware</button>
+    <p class="note" id="fwState">First press <b>Allow update</b> on the watch (Settings &gt; System), then choose <b>orbit.bin</b>. If the new version fails to start, the watch goes back to this one.</p>
+  </section>
+</main>
+<div id="msg"></div>
+<script>
+const $ = id => document.getElementById(id);
+const say = t => { const m = $('msg'); m.textContent = t; m.classList.add('on'); clearTimeout(say.t); say.t = setTimeout(() => m.classList.remove('on'), 2400); };
+const api = (path, opt) => fetch(path, opt).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); });
+const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const pill = (text, ok) => `<span class="pill ${ok ? 'ok' : 'bad'}">${text}</span>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function status() {
+  try {
+    const s = await api('/api/status');
+    $('summary').textContent = `v${s.version}  ·  battery ${s.battery < 0 ? '--' : s.battery + '%'}  ·  ${(s.storage_free_kb / 1024).toFixed(1)} MB free`;
+    $('wifiState').innerHTML = s.wifi ? pill('Connected to ' + esc(s.ssid) + ' (' + s.ip + ')', true) : pill('Not on a network yet', false);
+    $('aiState').innerHTML = pill(s.has_ai_key ? 'API key saved' : 'No API key yet', s.has_ai_key);
+    $('camState').innerHTML = pill(s.has_camera ? 'Camera: ' + esc(s.camera_ssid) : 'No camera saved', s.has_camera);
+    if (s.tiles_total) $('tilesState').textContent = `Saved ${s.tiles_done} of ${s.tiles_total} tiles`;
+  } catch (e) { $('summary').textContent = 'Watch not reachable'; }
+}
+
+async function scan() {
+  $('ssid').innerHTML = '<option value="">Scanning...</option>';
+  try {
+    const list = await api('/api/scan');
+    const seen = new Set();
+    $('ssid').innerHTML = list.filter(a => !seen.has(a.ssid) && seen.add(a.ssid)).sort((a, b) => b.rssi - a.rssi)
+      .map(a => `<option value="${esc(a.ssid)}">${esc(a.ssid)}${a.secure ? '' : ' (open)'}</option>`).join('') || '<option value="">No networks found</option>';
+  } catch (e) { $('ssid').innerHTML = '<option value="">Scan failed</option>'; }
+}
+$('scanBtn').onclick = scan;
+$('joinBtn').onclick = async () => {
+  if (!$('ssid').value) return say('Pick a network first');
+  await post('/api/wifi', { ssid: $('ssid').value, pass: $('pass').value });
+  say('Saved. The watch is joining now.');
+  setTimeout(status, 6000);
+};
+
+// ---- photos: crop to a centred square, resize to the panel, upload as JPEG
+async function photos() {
+  const list = await api('/api/photos');
+  $('photos').innerHTML = list.map(n => `<div class="ph"><img src="/photos/${n}?${Date.now()}" alt=""><button data-n="${n}">Remove</button></div>`).join('');
+  $('photos').querySelectorAll('button').forEach(b => b.onclick = async () => { await api('/api/photos?name=' + b.dataset.n, { method: 'DELETE' }); photos(); });
+}
+$('files').onchange = async e => {
+  for (const file of e.target.files) {
+    try {
+      const img = await createImageBitmap(file);
+      const side = Math.min(img.width, img.height), c = document.createElement('canvas');
+      c.width = c.height = 466;
+      c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 466, 466);
+      const blob = await new Promise(done => c.toBlob(done, 'image/jpeg', 0.86));
+      const r = await fetch('/api/photos', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+      if (!r.ok) throw new Error(await r.text());
+    } catch (err) { say('Could not add ' + file.name); }
+  }
+  e.target.value = '';
+  say('Photos updated');
+  photos(); status();
+};
+
+// ---- keys
+const KEYS = [];
+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach((c, i) => KEYS.push([c, 4 + i]));
+'1234567890'.split('').forEach((c, i) => KEYS.push([c, 30 + i]));
+[['Enter', 40], ['Esc', 41], ['Backspace', 42], ['Tab', 43], ['Space', 44], ['Print Screen', 70], ['Home', 74], ['Page Up', 75],
+ ['Delete', 76], ['End', 77], ['Page Down', 78], ['Right', 79], ['Left', 80], ['Down', 81], ['Up', 82]].forEach(k => KEYS.push(k));
+for (let i = 1; i <= 12; i++) KEYS.push(['F' + i, 57 + i]);
+for (let i = 13; i <= 24; i++) KEYS.push(['F' + i, 91 + i]);
+const MEDIA = [['Play / pause', 205], ['Next track', 181], ['Previous track', 182], ['Volume up', 233], ['Volume down', 234], ['Mute', 226]];
+const MODS = [['Ctrl', 1], ['Shift', 2], ['Alt', 4], ['Win / Cmd', 8]];
+
+function macroRow(m, i) {
+  const keyOpts = KEYS.map(k => `<option value="${k[1]}" ${k[1] == m.key ? 'selected' : ''}>${k[0]}</option>`).join('');
+  const mediaOpts = MEDIA.map(k => `<option value="${k[1]}" ${k[1] == m.usage ? 'selected' : ''}>${k[0]}</option>`).join('');
+  const mods = MODS.map(k => `<label><input type="checkbox" data-mod="${k[1]}" ${m.mods & k[1] ? 'checked' : ''}>${k[0]}</label>`).join('');
+  return `<div class="macro" data-i="${i}">
+    <div class="row"><input data-f="label" maxlength="11" placeholder="Button ${i + 1}" value="${esc(m.label)}">
+      <select data-f="type"><option value="0" ${m.type == 0 ? 'selected' : ''}>Shortcut</option><option value="1" ${m.type == 1 ? 'selected' : ''}>Type text</option><option value="2" ${m.type == 2 ? 'selected' : ''}>Media key</option></select></div>
+    <div data-show="0"><div class="mods">${mods}</div><label>Key</label><select data-f="key">${keyOpts}</select></div>
+    <div data-show="1"><label>Text to type</label><input data-f="text" maxlength="47" value="${esc(m.text)}"></div>
+    <div data-show="2"><label>Media key</label><select data-f="usage">${mediaOpts}</select></div></div>`;
+}
+function macroShow(row) {
+  const t = row.querySelector('[data-f=type]').value;
+  row.querySelectorAll('[data-show]').forEach(d => d.style.display = d.dataset.show == t ? '' : 'none');
+}
+async function macros() {
+  const list = await api('/api/macros');
+  $('macros').innerHTML = list.map(macroRow).join('');
+  $('macros').querySelectorAll('.macro').forEach(r => { macroShow(r); r.querySelector('[data-f=type]').onchange = () => macroShow(r); });
+}
+$('macroSave').onclick = async () => {
+  const list = [...$('macros').querySelectorAll('.macro')].map(r => {
+    const f = n => r.querySelector(`[data-f=${n}]`).value;
+    let mods = 0; r.querySelectorAll('[data-mod]').forEach(c => { if (c.checked) mods |= +c.dataset.mod; });
+    return { label: f('label'), type: +f('type'), mods, key: +f('key'), usage: +f('usage'), text: f('text') };
+  });
+  await post('/api/macros', list);
+  say('Keys saved');
+};
+
+// ---- secrets
+$('aiSave').onclick = async () => {
+  const body = { ai_voice: $('aiVoice').value };
+  if ($('aiKey').value) body.ai_key = $('aiKey').value.trim();
+  if ($('aiChat').value) body.ai_chat = $('aiChat').value.trim();
+  await post('/api/secrets', body); $('aiKey').value = ''; say('Assistant saved'); status();
+};
+$('camSave').onclick = async () => {
+  if (!$('camSsid').value) return say('Enter the camera network name');
+  await post('/api/secrets', { cam_ssid: $('camSsid').value.trim(), cam_pass: $('camPass').value });
+  $('camPass').value = ''; say('Camera saved'); status();
+};
+$('tilesBtn').onclick = async () => {
+  const p = $('place').value.split(',').map(Number);
+  if (p.length != 2 || p.some(isNaN)) return say('Enter latitude, longitude');
+  try { const r = await post('/api/tiles', { lat: p[0], lon: p[1] }); say(`Downloading ${r.queued} tiles`); } catch (e) { say('The watch needs Wi-Fi first'); }
+};
+
+$('fwBtn').onclick = () => {
+  const file = $('fw').files[0];
+  if (!file) return say('Choose orbit.bin first');
+  $('fwBtn').disabled = true;
+  $('fwState').textContent = 'Uploading 0%. Keep this page open...';
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/update');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) {
+      const pct = Math.min(99, Math.round(e.loaded * 100 / e.total));
+      $('fwState').textContent = `Uploading ${pct}%. Keep this page open...`;
+    }
+  };
+  xhr.onload = () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      $('fwState').textContent = 'Installed. The watch is restarting.';
+    } else {
+      $('fwState').textContent = 'Not installed: ' + (xhr.responseText || xhr.statusText);
+    }
+    $('fwBtn').disabled = false;
+  };
+  xhr.onerror = () => {
+    $('fwState').textContent = 'Not installed: connection lost';
+    $('fwBtn').disabled = false;
+  };
+  xhr.send(file);
+};
+
+// The browser knows the right time and time zone, so hand both to the watch.
+post('/api/time', { epoch: Math.floor(Date.now() / 1000), tz: -new Date().getTimezoneOffset() }).catch(() => {});
+status(); scan(); photos().catch(() => {}); macros().catch(() => {});
+setInterval(status, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,726 @@
+/* Small single-purpose apps: Level, Find Phone, Counter, Dice, Sun times,
+ * Exposure, Focus, Water, Workout, Presenter and Reflex. */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "../ui/ui.h"
+
+#define RAD (3.14159265358979 / 180.0)
+
+static lv_obj_t *big(lv_obj_t *scr, const char *text, int y)
+{
+    lv_obj_t *l = ui_label(scr, text, &font_num_big, C_TEXT);
+    lv_obj_align(l, LV_ALIGN_CENTER, 0, y);
+    return l;
+}
+
+static lv_obj_t *caption(lv_obj_t *scr, const char *text, int y)
+{
+    lv_obj_t *l = ui_label(scr, text, F16, C_DIM);
+    lv_obj_set_width(l, 320);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(l, LV_ALIGN_CENTER, 0, y);
+    return l;
+}
+
+/* ------------------------------------------------------------------ level */
+
+#define LEVEL_COLOR 0xA8DAB5
+static lv_obj_t *le_bubble, *le_angle;
+
+static void level_frame(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    float x, y, z;
+    svc_tilt(&x, &y, &z);
+    /* The bubble floats uphill, as in a real level. */
+    float limit = 0.5f;
+    float bx = x < -limit ? -limit : (x > limit ? limit : x), by = y < -limit ? -limit : (y > limit ? limit : y);
+    lv_obj_align(le_bubble, LV_ALIGN_CENTER, (int)(-bx * 300), (int)(by * 300));
+    float tilt = (float)(atan2(sqrt((double)(x * x + y * y)), fabs((double)z)) / RAD);
+    bool flat = tilt < 1.0f;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f\xC2\xB0", (double)tilt);
+    lv_label_set_text(le_angle, buf);
+    lv_obj_set_style_bg_color(le_bubble, flat ? lv_color_hex(LEVEL_COLOR) : C_TEXT, 0);
+}
+
+static void level_create(lv_obj_t *scr)
+{
+    lv_obj_t *ring = ui_arc(scr, 380, 4, C_SURF2, C_SURF2, 0, 360);
+    lv_obj_center(ring);
+    lv_obj_t *target = ui_arc(scr, 96, 4, lv_color_hex(LEVEL_COLOR), C_SURF2, 0, 360);
+    lv_obj_center(target);
+    le_bubble = ui_box(scr, 76, 76);
+    lv_obj_set_style_radius(le_bubble, 38, 0);
+    lv_obj_set_style_bg_opa(le_bubble, 220, 0);
+    le_angle = ui_label(scr, "", F24, C_TEXT);
+    lv_obj_align(le_angle, LV_ALIGN_BOTTOM_MID, 0, -50);
+    ui_timer(scr, level_frame, 40, NULL);
+    level_frame(NULL);
+}
+
+const app_t app_level = {
+    .id = "level", .name = "Level", .icon = &ic_level_48, .color = LEVEL_COLOR, .create = level_create,
+    .keep_awake = true,
+};
+
+/* ------------------------------------------------------------- find phone */
+
+#define FIND_COLOR 0x4ADE9B
+static lv_obj_t *fp_btn, *fp_text;
+static bool fp_ringing;
+
+static void find_paint(void)
+{
+    bool android = S.link.status == LINK_CONNECTED && S.link.peer == PEER_ANDROID;
+    lv_obj_set_style_bg_color(fp_btn, fp_ringing ? lv_color_hex(FIND_COLOR) : C_SURF2, 0);
+    ui_icon_set(ui_btn_icon(fp_btn), NULL, fp_ringing ? lv_color_black() : (android ? C_TEXT : C_FAINT));
+    lv_label_set_text(fp_text, fp_ringing ? "Ringing. Tap to stop."
+                                          : android ? "Tap to make your phone ring"
+                                          : S.link.peer == PEER_IPHONE ? "iPhones don't offer this to accessories"
+                                          : "Phone not connected");
+}
+
+static void find_tap(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (S.link.status != LINK_CONNECTED || S.link.peer != PEER_ANDROID) return;
+    fp_ringing = !fp_ringing;
+    svc_find_phone(fp_ringing);
+    find_paint();
+}
+
+static void find_closed(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (fp_ringing) svc_find_phone(false);
+    fp_ringing = false;
+}
+
+static void find_create(lv_obj_t *scr)
+{
+    fp_btn = ui_round_btn(scr, 170, C_SURF2, &ic_target_48, C_TEXT, find_tap, NULL);
+    lv_obj_align(fp_btn, LV_ALIGN_CENTER, 0, -30);
+    fp_text = caption(scr, "", 100);
+    lv_obj_add_event_cb(scr, find_closed, LV_EVENT_DELETE, NULL);
+    find_paint();
+}
+
+const app_t app_findphone = {
+    .id = "find", .name = "Find Phone", .icon = &ic_target_48, .color = FIND_COLOR, .create = find_create,
+};
+
+/* ---------------------------------------------------------------- counter */
+
+#define COUNT_COLOR 0xA8C7FA
+static int ct_value;
+static lv_obj_t *ct_label;
+
+static void counter_paint(void)
+{
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d", ct_value);
+    lv_label_set_text(ct_label, buf);
+}
+
+static void counter_tap(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    ct_value = d == 0 ? 0 : ct_value + d;
+    if (ct_value < 0) ct_value = 0;
+    if (d > 0 && CFG.sound) svc_sound(SND_TAP);
+    counter_paint();
+}
+
+static void counter_create(lv_obj_t *scr)
+{
+    /* The whole upper screen is the "add one" button. */
+    lv_obj_t *add = ui_round_btn(scr, 250, ui_tint(lv_color_hex(COUNT_COLOR), 22), NULL, C_TEXT, counter_tap, (void *)1);
+    lv_obj_align(add, LV_ALIGN_CENTER, 0, -36);
+    ct_label = ui_label(add, "", &font_num_hero_bold, lv_color_hex(COUNT_COLOR));
+    lv_obj_center(ct_label);
+    lv_obj_t *less = ui_round_btn(scr, 64, C_SURF2, &ic_minus_28, C_TEXT, counter_tap, (void *)(intptr_t)-1);
+    lv_obj_align(less, LV_ALIGN_CENTER, -72, 156);
+    lv_obj_t *zero = ui_round_btn(scr, 64, C_SURF2, &ic_restart_28, C_TEXT, counter_tap, (void *)0);
+    lv_obj_align(zero, LV_ALIGN_CENTER, 72, 156);
+    counter_paint();
+}
+
+const app_t app_counter = {
+    .id = "counter", .name = "Counter", .icon = &ic_tally_48, .color = COUNT_COLOR, .create = counter_create,
+};
+
+/* ------------------------------------------------------------------- dice */
+
+#define DICE_COLOR 0xFFB1C8
+static lv_obj_t *dc_face[2], *dc_total;
+static int dc_count = 2, dc_value[2] = {3, 5};
+
+static void dice_draw(lv_event_t *e)
+{
+    /* Pip positions on a 3 x 3 grid, as bit masks for 1..6. */
+    static const uint16_t pips[7] = {0, 0x010, 0x044, 0x054, 0x145, 0x155, 0x16D};
+    lv_obj_t *obj = lv_event_get_target_obj(e);
+    int value = dc_value[(int)(intptr_t)lv_event_get_user_data(e)];
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    int step = lv_area_get_width(&a) / 4;
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.radius = LV_RADIUS_CIRCLE;
+    d.bg_color = lv_color_black();
+    for (int i = 0; i < 9; i++) {
+        if (!(pips[value] & (1 << i))) continue;
+        int cx = a.x1 + step * (1 + i % 3), cy = a.y1 + step * (1 + i / 3);
+        lv_area_t p = {cx - 11, cy - 11, cx + 11, cy + 11};
+        lv_draw_rect(layer, &d, &p);
+    }
+}
+
+static void dice_paint(void)
+{
+    char buf[16];
+    for (int i = 0; i < 2; i++) {
+        if (i < dc_count) lv_obj_remove_flag(dc_face[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(dc_face[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(dc_face[i], LV_ALIGN_CENTER, dc_count == 1 ? 0 : (i ? 76 : -76), -30);
+        lv_obj_invalidate(dc_face[i]);
+    }
+    snprintf(buf, sizeof(buf), "Total %d", dc_value[0] + (dc_count > 1 ? dc_value[1] : 0));
+    lv_label_set_text(dc_total, buf);
+}
+
+static void dice_roll(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    for (int i = 0; i < 2; i++) dc_value[i] = (int)lv_rand(1, 6);
+    dice_paint();
+}
+
+static void dice_count(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    dc_count = dc_count == 1 ? 2 : 1;
+    dice_paint();
+}
+
+static void dice_create(lv_obj_t *scr)
+{
+    lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(scr, dice_roll, LV_EVENT_SHORT_CLICKED, NULL);
+    for (int i = 0; i < 2; i++) {
+        dc_face[i] = ui_box(scr, 132, 132);
+        lv_obj_remove_flag(dc_face[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(dc_face[i], 28, 0);
+        lv_obj_set_style_bg_color(dc_face[i], lv_color_hex(DICE_COLOR), 0);
+        lv_obj_set_style_bg_opa(dc_face[i], LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(dc_face[i], dice_draw, LV_EVENT_DRAW_MAIN_END, (void *)(intptr_t)i);
+    }
+    dc_total = ui_label(scr, "", F24, C_TEXT);
+    lv_obj_align(dc_total, LV_ALIGN_CENTER, 0, 76);
+    caption(scr, "Tap anywhere to roll", 112);
+    lv_obj_t *n = ui_pill_btn(scr, "1 or 2 dice", C_SURF, C_DIM, dice_count, NULL);
+    lv_obj_set_height(n, 44);
+    lv_obj_align(n, LV_ALIGN_CENTER, 0, 164);
+    dice_paint();
+}
+
+const app_t app_dice = {
+    .id = "dice", .name = "Dice", .icon = &ic_dice_48, .color = DICE_COLOR, .create = dice_create,
+};
+
+/* -------------------------------------------------------------- sun times */
+
+#define SUN_COLOR 0xFFB68C
+
+/* Minutes after local midnight when the sun crosses `elevation` degrees,
+ * rising or setting. Returns false if it never does that day (polar days).
+ * Standard low-precision solar position formulas, good to a minute or two. */
+static bool sun_event(double lat, double lon, int yday, double elevation, bool rising, int tz_minutes, int *minutes)
+{
+    double g = 2.0 * 3.14159265358979 / 365.0 * (yday + 0.5);
+    double eqtime = 229.18 * (0.000075 + 0.001868 * cos(g) - 0.032077 * sin(g) - 0.014615 * cos(2 * g) - 0.040849 * sin(2 * g));
+    double decl = 0.006918 - 0.399912 * cos(g) + 0.070257 * sin(g) - 0.006758 * cos(2 * g) + 0.000907 * sin(2 * g) -
+                  0.002697 * cos(3 * g) + 0.00148 * sin(3 * g);
+    double cos_ha = (sin(elevation * RAD) - sin(lat * RAD) * sin(decl)) / (cos(lat * RAD) * cos(decl));
+    if (cos_ha < -1.0 || cos_ha > 1.0) return false;
+    double ha = acos(cos_ha) / RAD;
+    double utc = 720.0 - 4.0 * (lon + (rising ? ha : -ha)) - eqtime;
+    int local = (int)lround(utc) + tz_minutes;
+    *minutes = ((local % 1440) + 1440) % 1440;
+    return true;
+}
+
+static void sun_row(lv_obj_t *scr, const char *name, bool ok, int minutes, int y, lv_color_t c)
+{
+    char buf[16];
+    struct tm t = {.tm_hour = minutes / 60, .tm_min = minutes % 60};
+    if (ok) fmt_clock(buf, sizeof(buf), &t, false);
+    else snprintf(buf, sizeof(buf), "--");
+    lv_obj_align(ui_label(scr, name, F20, C_DIM), LV_ALIGN_CENTER, -74, y);
+    lv_obj_align(ui_label(scr, buf, F24, c), LV_ALIGN_CENTER, 92, y);
+}
+
+static void sun_create(lv_obj_t *scr)
+{
+    lv_color_t c = lv_color_hex(SUN_COLOR);
+    double place[2] = {0, 0};
+    bool known = svc_kv_load("place", place, sizeof(place));
+    if (S.gps.fix) place[0] = S.gps.lat, place[1] = S.gps.lon, known = true;
+    lv_obj_align(ui_icon(scr, &ic_sunrise_48, c), LV_ALIGN_TOP_MID, 0, 48);
+    if (!known) {
+        lv_obj_align(ui_label(scr, "Where are you?", F28, C_TEXT), LV_ALIGN_CENTER, 0, -30);
+        caption(scr, "Save a map area on the setup page, or open Maps with an Android phone connected.", 40);
+        return;
+    }
+    if (S.gps.fix) svc_kv_save("place", place, sizeof(place));
+
+    struct tm now;
+    svc_localtime(&now);
+    int up = 0, down = 0, gold_am = 0, gold_pm = 0, blue = 0;
+    bool a = sun_event(place[0], place[1], now.tm_yday, -0.833, true, CFG.tz_minutes, &up);
+    bool b = sun_event(place[0], place[1], now.tm_yday, 6.0, true, CFG.tz_minutes, &gold_am);
+    bool d = sun_event(place[0], place[1], now.tm_yday, 6.0, false, CFG.tz_minutes, &gold_pm);
+    bool f = sun_event(place[0], place[1], now.tm_yday, -0.833, false, CFG.tz_minutes, &down);
+    bool g = sun_event(place[0], place[1], now.tm_yday, -6.0, false, CFG.tz_minutes, &blue);
+    sun_row(scr, "Sunrise", a, up, -96, C_TEXT);
+    sun_row(scr, "Golden ends", b, gold_am, -52, c);
+    sun_row(scr, "Golden starts", d, gold_pm, -8, c);
+    sun_row(scr, "Sunset", f, down, 36, C_TEXT);
+    sun_row(scr, "Blue hour ends", g, blue, 80, lv_color_hex(0xA8C7FA));
+    char where[40];
+    snprintf(where, sizeof(where), "%.2f, %.2f", place[0], place[1]);
+    caption(scr, where, 128);
+}
+
+const app_t app_sun = {
+    .id = "sun", .name = "Sun Times", .icon = &ic_sunrise_48, .color = SUN_COLOR, .create = sun_create,
+};
+
+/* --------------------------------------------------------------- exposure */
+
+#define EXPO_COLOR 0xFFC53D
+
+/* Long exposures with a neutral-density filter: pick the metered shutter
+ * speed and the filter strength, read off the new time, and time it. */
+static const float SPEEDS[] = {1.0f / 4000, 1.0f / 2000, 1.0f / 1000, 1.0f / 500, 1.0f / 250, 1.0f / 125, 1.0f / 60,
+                               1.0f / 30,   1.0f / 15,   1.0f / 8,    1.0f / 4,   0.5f,       1,          2,
+                               4,           8,           15,          30};
+static const uint8_t STOPS[] = {0, 3, 6, 10, 13, 16};
+static int ex_speed = 6, ex_nd = 3;
+static lv_obj_t *ex_base, *ex_filter, *ex_result, *ex_timer;
+static float ex_seconds;
+
+static void shutter_text(char *buf, size_t len, float s)
+{
+    if (s < 0.4f) snprintf(buf, len, "1/%d", (int)lroundf(1.0f / s));
+    else if (s < 60) snprintf(buf, len, s < 10 && s != floorf(s) ? "%.1f s" : "%.0f s", (double)s);
+    else snprintf(buf, len, "%d min %02d s", (int)s / 60, (int)s % 60);
+}
+
+static void expo_paint(void)
+{
+    char buf[24];
+    shutter_text(buf, sizeof(buf), SPEEDS[ex_speed]);
+    lv_label_set_text(ex_base, buf);
+    snprintf(buf, sizeof(buf), STOPS[ex_nd] ? "ND %d stops" : "No filter", STOPS[ex_nd]);
+    lv_label_set_text(ex_filter, buf);
+    ex_seconds = SPEEDS[ex_speed] * (float)(1u << STOPS[ex_nd]);
+    shutter_text(buf, sizeof(buf), ex_seconds);
+    lv_label_set_text(ex_result, buf);
+    if (ex_seconds >= 2 && ex_seconds <= 99 * 60) lv_obj_remove_flag(ex_timer, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(ex_timer, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void expo_step(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    if (d == 1 || d == -1) ex_speed = LV_CLAMP(0, ex_speed + d, (int)(sizeof(SPEEDS) / sizeof(SPEEDS[0])) - 1);
+    else ex_nd = LV_CLAMP(0, ex_nd + d / 10, (int)sizeof(STOPS) - 1);
+    expo_paint();
+}
+
+static void expo_time(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    timer_start((int)lroundf(ex_seconds));
+    shell_toast("Timer started");
+}
+
+static lv_obj_t *expo_row(lv_obj_t *scr, int y, int step)
+{
+    lv_obj_t *down = ui_round_btn(scr, 56, C_SURF2, &ic_minus_28, C_TEXT, expo_step, (void *)(intptr_t)-step);
+    lv_obj_align(down, LV_ALIGN_CENTER, -138, y);
+    lv_obj_t *up = ui_round_btn(scr, 56, C_SURF2, &ic_plus_28, C_TEXT, expo_step, (void *)(intptr_t)step);
+    lv_obj_align(up, LV_ALIGN_CENTER, 138, y);
+    lv_obj_t *l = ui_label(scr, "", F24, C_TEXT);
+    lv_obj_align(l, LV_ALIGN_CENTER, 0, y);
+    return l;
+}
+
+static void expo_create(lv_obj_t *scr)
+{
+    caption(scr, "METERED SHUTTER", -132);
+    ex_base = expo_row(scr, -98, 1);
+    ex_filter = expo_row(scr, -30, 10);
+    ex_result = ui_label(scr, "", F48, lv_color_hex(EXPO_COLOR));
+    lv_obj_align(ex_result, LV_ALIGN_CENTER, 0, 50);
+    ex_timer = ui_pill_btn(scr, "Time it", lv_color_hex(EXPO_COLOR), lv_color_black(), expo_time, NULL);
+    lv_obj_align(ex_timer, LV_ALIGN_CENTER, 0, 132);
+    expo_paint();
+}
+
+const app_t app_exposure = {
+    .id = "exposure", .name = "Exposure", .icon = &ic_aperture_48, .color = EXPO_COLOR, .create = expo_create,
+};
+
+/* ------------------------------------------------------------------ focus */
+
+#define FOCUS_COLOR 0xFF8A80
+#define FOCUS_WORK (25 * 60)
+#define FOCUS_REST (5 * 60)
+
+/* Keeps counting with the app closed, like the timer. */
+static struct {
+    bool running, resting;
+    uint32_t end_ms;
+    int left_s, rounds;
+    lv_timer_t *watch;
+} P = {.left_s = FOCUS_WORK};
+static lv_obj_t *fo_scr, *fo_arc, *fo_time, *fo_phase, *fo_go;
+
+static int focus_left(void)
+{
+    if (!P.running) return P.left_s;
+    int32_t d = (int32_t)(P.end_ms - svc_millis());
+    return d > 0 ? (d + 999) / 1000 : 0;
+}
+
+static void focus_paint(void)
+{
+    if (!fo_scr) return;
+    char buf[32];
+    int left = focus_left(), total = P.resting ? FOCUS_REST : FOCUS_WORK;
+    snprintf(buf, sizeof(buf), "%02d:%02d", left / 60, left % 60);
+    lv_label_set_text(fo_time, buf);
+    ui_arc_set(fo_arc, left * 100 / total);
+    lv_obj_set_style_arc_color(fo_arc, P.resting ? C_GOOD : lv_color_hex(FOCUS_COLOR), LV_PART_INDICATOR);
+    snprintf(buf, sizeof(buf), "%s  " LV_SYMBOL_BULLET "  round %d", P.resting ? "BREAK" : "FOCUS", P.rounds + 1);
+    lv_label_set_text(fo_phase, buf);
+    ui_icon_set(ui_btn_icon(fo_go), P.running ? &ic_pause_48 : &ic_play_48, lv_color_black());
+}
+
+static void focus_tick(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (P.running && focus_left() == 0) {
+        /* Phase over: swap between work and break and carry straight on. */
+        if (!P.resting) P.rounds++;
+        P.resting = !P.resting;
+        P.left_s = P.resting ? FOCUS_REST : FOCUS_WORK;
+        P.end_ms = svc_millis() + (uint32_t)P.left_s * 1000;
+        svc_sound(SND_ALARM);
+        shell_alert(P.resting ? "Take a break" : "Back to it", P.resting ? "Five minutes off." : "25 minutes of focus.");
+    }
+    focus_paint();
+}
+
+static void focus_go(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (P.running) {
+        P.left_s = focus_left();
+        P.running = false;
+        if (P.watch) lv_timer_delete(P.watch);
+        P.watch = NULL;
+    } else {
+        P.end_ms = svc_millis() + (uint32_t)P.left_s * 1000;
+        P.running = true;
+        if (!P.watch) P.watch = lv_timer_create(focus_tick, 500, NULL);
+    }
+    focus_paint();
+}
+
+static void focus_reset(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (P.watch) lv_timer_delete(P.watch);
+    P.running = false, P.resting = false, P.rounds = 0, P.watch = NULL;
+    P.left_s = FOCUS_WORK;
+    focus_paint();
+}
+
+static void focus_closed(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    fo_scr = NULL;
+}
+
+static void focus_create(lv_obj_t *scr)
+{
+    fo_scr = scr;
+    lv_obj_add_event_cb(scr, focus_closed, LV_EVENT_DELETE, NULL);
+    fo_arc = ui_arc(scr, 442, 10, C_SURF, lv_color_hex(FOCUS_COLOR), 270, 360);
+    lv_obj_center(fo_arc);
+    fo_phase = ui_label(scr, "", F16, C_DIM);
+    lv_obj_set_style_text_letter_space(fo_phase, 2, 0);
+    lv_obj_align(fo_phase, LV_ALIGN_TOP_MID, 0, 66);
+    fo_time = big(scr, "", -34);
+    fo_go = ui_round_btn(scr, 96, lv_color_hex(FOCUS_COLOR), &ic_play_48, lv_color_black(), focus_go, NULL);
+    lv_obj_align(fo_go, LV_ALIGN_CENTER, 40, 88);
+    lv_obj_t *reset = ui_round_btn(scr, 72, C_SURF2, &ic_restart_48, C_TEXT, focus_reset, NULL);
+    lv_obj_align(reset, LV_ALIGN_CENTER, -66, 88);
+    ui_timer(scr, focus_tick, 500, NULL);
+    focus_paint();
+}
+
+const app_t app_focus = {
+    .id = "focus", .name = "Focus", .icon = &ic_half_48, .color = FOCUS_COLOR, .create = focus_create,
+};
+
+/* ------------------------------------------------------------------ water */
+
+#define WATER_COLOR 0x58B6FF
+#define WATER_GOAL 8
+
+static struct {
+    int16_t day;
+    uint8_t glasses;
+} W = {.day = -1};
+static lv_obj_t *wa_arc, *wa_count;
+
+static void water_paint(void)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", W.glasses);
+    lv_label_set_text(wa_count, buf);
+    ui_arc_set(wa_arc, W.glasses * 100 / WATER_GOAL);
+}
+
+static void water_step(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    if (d < 0 && W.glasses == 0) return;
+    W.glasses = (uint8_t)LV_MIN(W.glasses + d, 30);
+    svc_kv_save("water", &W, sizeof(W));
+    if (d > 0 && W.glasses == WATER_GOAL) shell_toast("Goal reached");
+    water_paint();
+}
+
+static void water_create(lv_obj_t *scr)
+{
+    lv_color_t c = lv_color_hex(WATER_COLOR);
+    struct tm now;
+    svc_localtime(&now);
+    svc_kv_load("water", &W, sizeof(W));
+    if (W.day != now.tm_yday) W.day = (int16_t)now.tm_yday, W.glasses = 0; /* a new day starts empty */
+
+    wa_arc = ui_arc(scr, 436, 14, C_SURF, c, 135, 270);
+    lv_obj_center(wa_arc);
+    lv_obj_align(ui_icon(scr, &ic_drop_48, c), LV_ALIGN_CENTER, 0, -118);
+    wa_count = big(scr, "", -40);
+    caption(scr, "glasses today, goal 8", 22);
+    lv_obj_t *less = ui_round_btn(scr, 68, C_SURF2, &ic_minus_28, C_TEXT, water_step, (void *)(intptr_t)-1);
+    lv_obj_align(less, LV_ALIGN_CENTER, -70, 108);
+    lv_obj_t *more = ui_round_btn(scr, 88, c, &ic_plus_48, lv_color_black(), water_step, (void *)1);
+    lv_obj_align(more, LV_ALIGN_CENTER, 40, 108);
+    water_paint();
+}
+
+const app_t app_water = {
+    .id = "water", .name = "Water", .icon = &ic_drop_48, .color = WATER_COLOR, .create = water_create,
+};
+
+/* ---------------------------------------------------------------- workout */
+
+#define WORK_COLOR 0xB1F0A0
+
+static struct {
+    bool active;
+    uint32_t start_ms, start_steps;
+} K;
+static lv_obj_t *wk_time, *wk_stats, *wk_go;
+
+static void workout_paint(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    char buf[96];
+    uint32_t s = K.active ? (svc_millis() - K.start_ms) / 1000 : 0;
+    uint32_t steps = K.active && S.steps >= K.start_steps ? S.steps - K.start_steps : 0;
+    snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+    lv_label_set_text(wk_time, buf);
+    unsigned metres = (unsigned)(steps * 3 / 4);
+    snprintf(buf, sizeof(buf), "%u steps  " LV_SYMBOL_BULLET "  %u.%02u km  " LV_SYMBOL_BULLET "  %u kcal", (unsigned)steps,
+             metres / 1000, metres % 1000 / 10, (unsigned)(steps / 25));
+    lv_label_set_text(wk_stats, K.active ? buf : "Start a walk or run");
+    lv_obj_set_style_bg_color(wk_go, K.active ? C_BAD : lv_color_hex(WORK_COLOR), 0);
+    ui_icon_set(ui_btn_icon(wk_go), K.active ? &ic_stop_48 : &ic_play_48, lv_color_black());
+}
+
+static void workout_go(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (K.active) {
+        char buf[64];
+        uint32_t s = (svc_millis() - K.start_ms) / 1000, steps = S.steps >= K.start_steps ? S.steps - K.start_steps : 0;
+        snprintf(buf, sizeof(buf), "%u min, %u steps, about %u kcal.", (unsigned)(s / 60), (unsigned)steps, (unsigned)(steps / 25));
+        K.active = false;
+        shell_alert("Workout done", buf);
+    } else {
+        K.active = true, K.start_ms = svc_millis(), K.start_steps = S.steps;
+    }
+    workout_paint(NULL);
+}
+
+static void workout_create(lv_obj_t *scr)
+{
+    lv_obj_align(ui_icon(scr, &ic_dumbbell_48, lv_color_hex(WORK_COLOR)), LV_ALIGN_TOP_MID, 0, 54);
+    wk_time = big(scr, "", -52);
+    wk_stats = caption(scr, "", 8);
+    wk_go = ui_round_btn(scr, 104, lv_color_hex(WORK_COLOR), &ic_play_48, lv_color_black(), workout_go, NULL);
+    lv_obj_align(wk_go, LV_ALIGN_CENTER, 0, 108);
+    ui_timer(scr, workout_paint, 1000, NULL);
+    workout_paint(NULL);
+}
+
+const app_t app_workout = {
+    .id = "workout", .name = "Workout", .icon = &ic_dumbbell_48, .color = WORK_COLOR, .create = workout_create,
+    .keep_awake = true,
+};
+
+/* -------------------------------------------------------------- presenter */
+
+#define SLIDE_COLOR 0x58B6FF
+static lv_obj_t *pr_time, *pr_state;
+static uint32_t pr_start;
+static bool pr_keys_here;
+
+static void presenter_paint(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    char buf[16];
+    uint32_t s = (svc_millis() - pr_start) / 1000;
+    snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
+    lv_label_set_text(pr_time, buf);
+    bool up = S.link.keys_mode && S.link.status == LINK_CONNECTED;
+    lv_label_set_text(pr_state, up ? S.link.name : "Pair \"Orbit Keys\" on the computer");
+}
+
+static void presenter_key(lv_event_t *e)
+{
+    svc_hid_keys(0, (uint8_t)(uintptr_t)lv_event_get_user_data(e));
+}
+
+static void presenter_closed(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (pr_keys_here) svc_link_keys_mode(false);
+    pr_keys_here = false;
+}
+
+static void presenter_create(lv_obj_t *scr)
+{
+    lv_color_t c = lv_color_hex(SLIDE_COLOR);
+    pr_start = svc_millis();
+    pr_state = ui_label_fit(scr, "", F14, C_DIM, 300);
+    lv_obj_align(pr_state, LV_ALIGN_TOP_MID, 0, 40);
+    pr_time = ui_label(scr, "", F36, C_TEXT);
+    lv_obj_align(pr_time, LV_ALIGN_TOP_MID, 0, 64);
+    /* Arrow keys move slides in every presentation app; B blanks the screen. */
+    lv_obj_t *next = ui_round_btn(scr, 170, c, &ic_next_48, lv_color_black(), presenter_key, (void *)0x4F);
+    lv_obj_align(next, LV_ALIGN_CENTER, 62, 30);
+    lv_obj_t *prev = ui_round_btn(scr, 96, C_SURF2, &ic_prev_48, C_TEXT, presenter_key, (void *)0x50);
+    lv_obj_align(prev, LV_ALIGN_CENTER, -112, 30);
+    lv_obj_t *blank = ui_pill_btn(scr, "Blank", C_SURF, C_DIM, presenter_key, (void *)0x05);
+    lv_obj_set_height(blank, 44);
+    lv_obj_align(blank, LV_ALIGN_BOTTOM_MID, 0, -30);
+
+    lv_obj_add_event_cb(scr, presenter_closed, LV_EVENT_DELETE, NULL);
+    ui_timer(scr, presenter_paint, 500, NULL);
+    pr_keys_here = !S.link.keys_mode;
+    if (pr_keys_here) svc_link_keys_mode(true);
+    presenter_paint(NULL);
+}
+
+const app_t app_presenter = {
+    .id = "presenter", .name = "Presenter", .icon = &ic_monitor_48, .color = SLIDE_COLOR, .create = presenter_create,
+    .keep_awake = true, .no_clock = true,
+};
+
+/* ----------------------------------------------------------------- reflex */
+
+#define REFLEX_COLOR 0xFDD663
+enum { RX_IDLE, RX_WAIT, RX_GO, RX_DONE, RX_EARLY };
+static int rf_state, rf_best;
+static uint32_t rf_at;
+static lv_obj_t *rf_disc, *rf_text, *rf_sub;
+
+static void reflex_paint(void)
+{
+    static const uint32_t colors[] = {0x313131, 0xFF5D5D, 0x4ADE80, 0x313131, 0x313131};
+    char buf[32];
+    lv_obj_set_style_bg_color(rf_disc, lv_color_hex(colors[rf_state]), 0);
+    lv_obj_set_style_text_color(rf_text, rf_state == RX_GO || rf_state == RX_WAIT ? lv_color_black() : C_TEXT, 0);
+    switch (rf_state) {
+    case RX_WAIT: lv_label_set_text(rf_text, "Wait"); break;
+    case RX_GO: lv_label_set_text(rf_text, "Tap!"); break;
+    case RX_EARLY: lv_label_set_text(rf_text, "Too soon"); break;
+    case RX_DONE:
+        snprintf(buf, sizeof(buf), "%u ms", (unsigned)rf_at);
+        lv_label_set_text(rf_text, buf);
+        break;
+    default: lv_label_set_text(rf_text, "Tap to start"); break;
+    }
+    if (rf_best) snprintf(buf, sizeof(buf), "Best %d ms", rf_best);
+    else snprintf(buf, sizeof(buf), "Tap when it turns green");
+    lv_label_set_text(rf_sub, buf);
+}
+
+static void reflex_tick(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (rf_state == RX_WAIT && (int32_t)(svc_millis() - rf_at) >= 0) {
+        rf_state = RX_GO;
+        rf_at = svc_millis();
+        reflex_paint();
+    }
+}
+
+static void reflex_tap(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (rf_state == RX_WAIT) {
+        rf_state = RX_EARLY;
+    } else if (rf_state == RX_GO) {
+        rf_at = svc_millis() - rf_at;
+        if (!rf_best || (int)rf_at < rf_best) rf_best = (int)rf_at;
+        rf_state = RX_DONE;
+    } else {
+        rf_state = RX_WAIT;
+        rf_at = svc_millis() + lv_rand(1200, 4200); /* nobody can guess the moment */
+    }
+    reflex_paint();
+}
+
+static void reflex_create(lv_obj_t *scr)
+{
+    rf_state = RX_IDLE;
+    rf_disc = ui_round_btn(scr, 300, C_SURF2, NULL, C_TEXT, NULL, NULL);
+    lv_obj_set_style_bg_color(rf_disc, C_SURF2, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(rf_disc, reflex_tap, LV_EVENT_PRESSED, NULL);
+    lv_obj_align(rf_disc, LV_ALIGN_CENTER, 0, -16);
+    rf_text = ui_label(rf_disc, "", F36, C_TEXT);
+    lv_obj_center(rf_text);
+    rf_sub = caption(scr, "", 176);
+    ui_timer(scr, reflex_tick, 10, NULL);
+    reflex_paint();
+}
+
+const app_t app_reflex = {
+    .id = "reflex", .name = "Reflex", .icon = &ic_bolt_48, .color = REFLEX_COLOR, .create = reflex_create,
+    .keep_awake = true,
+};

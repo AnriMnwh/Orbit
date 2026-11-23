@@ -1,0 +1,9 @@
+dependencies:
+  idf: ">=5.5"
+  # Official Waveshare board support: display, touch, audio codecs.
+  waveshare/esp32_s3_touch_amoled_1_75c: "^3.0.0"
+  # Motion sensor driver Waveshare ships with this board's examples.
+  waveshare/qmi8658: "^2.0.0"
+  # Pinned to the LVGL release Waveshare validated on this board.
+  lvgl/lvgl: "9.5.0"
+  espressif/mdns: "^1.4.0"

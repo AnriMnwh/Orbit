@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Orbit</string>
+    <string name="channel_link">Watch connection</string>
+    <string name="link_connected">Connected to your watch</string>
+    <string name="link_waiting">Waiting for your watch</string>
+    <string name="link_unpaired">No watch paired</string>
+</resources>
