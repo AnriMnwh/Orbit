@@ -35,6 +35,7 @@ static volatile bool stop_flag, recording;
 static volatile float level;
 static int16_t *rec_buf;
 static size_t rec_len;
+static int16_t bus_stereo[CHUNK * 2]; /* shared under bus_lock to save internal BSS */
 
 float audio_level(void)
 {
@@ -84,12 +85,11 @@ void audio_play(const int16_t *pcm, size_t samples, int rate)
     xSemaphoreTake(bus_lock, portMAX_DELAY);
     stop_flag = false;
     if (bus_open(rate)) {
-        static int16_t stereo[CHUNK * 2];
         for (size_t off = 0; off < samples && !stop_flag; off += CHUNK) {
             size_t n = samples - off < CHUNK ? samples - off : CHUNK;
-            for (size_t i = 0; i < n; i++) stereo[2 * i] = stereo[2 * i + 1] = pcm[off + i];
+            for (size_t i = 0; i < n; i++) bus_stereo[2 * i] = bus_stereo[2 * i + 1] = pcm[off + i];
             level = peak_of(pcm + off, n, 4);
-            esp_codec_dev_write(spk, stereo, (int)(n * 4));
+            esp_codec_dev_write(spk, bus_stereo, (int)(n * 4));
         }
         bus_close();
     }
@@ -101,13 +101,12 @@ void audio_play(const int16_t *pcm, size_t samples, int rate)
 static void record_task(void *arg)
 {
     LV_UNUSED(arg);
-    static int16_t stereo[CHUNK * 2];
     const size_t cap = REC_RATE * REC_MAX_SECONDS;
     xSemaphoreTake(bus_lock, portMAX_DELAY);
     if (bus_open(REC_RATE)) {
         while (recording && rec_len + CHUNK <= cap) {
-            if (esp_codec_dev_read(mic, stereo, sizeof(stereo)) != ESP_CODEC_DEV_OK) break;
-            for (size_t i = 0; i < CHUNK; i++) rec_buf[rec_len + i] = (int16_t)((stereo[2 * i] + stereo[2 * i + 1]) / 2);
+            if (esp_codec_dev_read(mic, bus_stereo, sizeof(bus_stereo)) != ESP_CODEC_DEV_OK) break;
+            for (size_t i = 0; i < CHUNK; i++) rec_buf[rec_len + i] = (int16_t)((bus_stereo[2 * i] + bus_stereo[2 * i + 1]) / 2);
             level = peak_of(rec_buf + rec_len, CHUNK, 4);
             rec_len += CHUNK;
         }
@@ -158,7 +157,6 @@ typedef struct {
 static void play_tones(const tone_t *t, int n)
 {
     static int16_t buf[REC_RATE / 4];
-    static int16_t stereo[CHUNK * 2];
     if (!bus_lock || recording) return;
     xSemaphoreTake(bus_lock, portMAX_DELAY);
     stop_flag = false;
@@ -177,8 +175,8 @@ static void play_tones(const tone_t *t, int n)
             }
             for (size_t off = 0; off < len && !stop_flag; off += CHUNK) {
                 size_t chunk = len - off < CHUNK ? len - off : CHUNK;
-                for (size_t i = 0; i < chunk; i++) stereo[2 * i] = stereo[2 * i + 1] = buf[off + i];
-                esp_codec_dev_write(spk, stereo, (int)(chunk * 4));
+                for (size_t i = 0; i < chunk; i++) bus_stereo[2 * i] = bus_stereo[2 * i + 1] = buf[off + i];
+                esp_codec_dev_write(spk, bus_stereo, (int)(chunk * 4));
             }
         }
         bus_close();

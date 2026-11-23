@@ -32,6 +32,9 @@ $project = Split-Path -Parent $PSScriptRoot
 
 if (-not $env:ORBIT_IDF_READY) {
     $env:IDF_PATH = $idfPath
+    if (-not $env:IDF_TOOLS_PATH -and (Test-Path 'C:\Espressif\tools')) {
+        $env:IDF_TOOLS_PATH = 'C:\Espressif'
+    }
     if ($venv) {
         $env:IDF_PYTHON_ENV_PATH = $venv
         $env:PATH = "$venv\Scripts;$env:PATH"

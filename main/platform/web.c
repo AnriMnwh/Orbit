@@ -52,10 +52,30 @@ static char *read_body(httpd_req_t *req, size_t max, size_t *len)
     return buf;
 }
 
+static void add_security_headers(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+    httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+}
+
+/* Reject cross-origin browser POST/DELETE requests (CSRF / DNS-rebinding guard).
+ * Direct CLI/non-browser callers that omit Origin are allowed. */
+static bool origin_ok(httpd_req_t *req)
+{
+    char origin[96] = "", host[64] = "";
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK || !origin[0]) return true;
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK || !host[0]) return false;
+    const char *p = strstr(origin, "://");
+    const char *o_host = p ? p + 3 : origin;
+    return strcasecmp(o_host, host) == 0;
+}
+
 static esp_err_t send_json(httpd_req_t *req, cJSON *root)
 {
     char *text = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
+    add_security_headers(req);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = httpd_resp_sendstr(req, text ? text : "{}");
@@ -65,6 +85,7 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *root)
 
 static esp_err_t send_ok(httpd_req_t *req)
 {
+    add_security_headers(req);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
@@ -95,6 +116,9 @@ static bool safe_name(const char *name)
 
 static esp_err_t h_index(httpd_req_t *req)
 {
+    add_security_headers(req);
+    httpd_resp_set_hdr(req, "Content-Security-Policy",
+                       "default-src 'self'; img-src 'self' data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'");
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start);
 }
@@ -130,8 +154,10 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON_AddNumberToObject(r, "storage_free_kb", free_kb);
     cJSON_AddBoolToObject(r, "time_valid", svc_time_valid());
     cJSON_AddBoolToObject(r, "has_ai_key", net_secret_get("ai_key", tmp, sizeof(tmp)));
+    memset(tmp, 0, sizeof(tmp));
     cJSON_AddBoolToObject(r, "has_camera", net_secret_get("cam_ssid", tmp, sizeof(tmp)));
     cJSON_AddStringToObject(r, "camera_ssid", tmp);
+    memset(tmp, 0, sizeof(tmp));
     cJSON_AddNumberToObject(r, "tiles_done", done);
     cJSON_AddNumberToObject(r, "tiles_total", queued);
     cJSON_AddStringToObject(r, "phone", S.link.status == LINK_CONNECTED ? S.link.name : "");
@@ -172,9 +198,13 @@ static void rejoin_task(void *arg)
 
 static esp_err_t h_wifi(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     char *body = read_body(req, 512, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
-    free(body);
+    if (body) {
+        memset(body, 0, strlen(body));
+        free(body);
+    }
     const char *ssid = j ? str_of(j, "ssid") : NULL;
     const char *pass = j ? str_of(j, "pass") : NULL;
     if (!ssid || !ssid[0] || strlen(ssid) > 32 || (pass && strlen(pass) > 64)) {
@@ -191,12 +221,13 @@ static esp_err_t h_wifi(httpd_req_t *req)
 /* The phone's browser knows the right time and time zone: take both. */
 static esp_err_t h_time(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     char *body = read_body(req, 256, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
     cJSON *epoch = j ? cJSON_GetObjectItem(j, "epoch") : NULL;
     cJSON *tz = j ? cJSON_GetObjectItem(j, "tz") : NULL;
-    if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz)) {
+    if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(tz) || tz->valueint < -720 || tz->valueint > 840) {
         cJSON_Delete(j);
         return fail(req, "epoch and tz required");
     }
@@ -209,10 +240,12 @@ static esp_err_t h_time(httpd_req_t *req)
 
 static esp_err_t h_photo_list(httpd_req_t *req)
 {
-    static char names[PHOTO_LIMIT][24];
+    char (*names)[24] = calloc(PHOTO_LIMIT, 24);
+    if (!names) return httpd_resp_send_500(req);
     int n = photos_list(names, PHOTO_LIMIT);
     cJSON *list = cJSON_CreateArray();
     for (int i = 0; i < n; i++) cJSON_AddItemToArray(list, cJSON_CreateString(names[i]));
+    free(names);
     return send_json(req, list);
 }
 
@@ -242,6 +275,7 @@ static esp_err_t h_photo_get(httpd_req_t *req)
 
 static esp_err_t h_photo_add(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     char path[64], name[24];
     if (req->content_len < 200 || req->content_len > PHOTO_MAX_BYTES) return fail(req, "photo too large");
     if (!photos_new_path(path, sizeof(path), name)) return fail(req, "photo library is full");
@@ -276,6 +310,7 @@ static esp_err_t h_photo_add(httpd_req_t *req)
 
 static esp_err_t h_photo_delete(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     char query[64], name[24];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK || !safe_name(name)) {
@@ -322,6 +357,7 @@ static int num_of(cJSON *obj, const char *key)
 
 static esp_err_t h_macro_set(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     char *body = read_body(req, 6000, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
@@ -350,15 +386,93 @@ static esp_err_t h_macro_set(httpd_req_t *req)
     return send_ok(req);
 }
 
+/* ----------------------------------------------------------- custom faces */
+
+static esp_err_t h_faces_get(httpd_req_t *req)
+{
+    cJSON *list = cJSON_CreateArray();
+    for (int i = 0; i < CUSTOM_FACE_COUNT; i++) {
+        const custom_face_t *f = &CUSTOM_FACES[i];
+        cJSON *o = cJSON_CreateObject();
+        char hex[8];
+        snprintf(hex, sizeof(hex), "#%06x", (unsigned)(f->bg_hex & 0xFFFFFF));
+        cJSON_AddStringToObject(o, "name", f->name);
+        cJSON_AddNumberToObject(o, "style", f->style);
+        cJSON_AddNumberToObject(o, "accent", f->accent);
+        cJSON_AddNumberToObject(o, "photo_idx", f->photo_idx);
+        cJSON_AddBoolToObject(o, "show_date", f->show_date != 0);
+        cJSON_AddBoolToObject(o, "show_comps", f->show_comps != 0);
+        cJSON_AddStringToObject(o, "bg", hex);
+        cJSON_AddItemToArray(list, o);
+    }
+    return send_json(req, list);
+}
+
+typedef struct {
+    int count;
+    custom_face_t items[CUSTOM_FACE_MAX];
+} faces_msg_t;
+
+static void faces_apply(void *arg)
+{
+    faces_msg_t *m = arg;
+    CUSTOM_FACE_COUNT = m->count;
+    memcpy(CUSTOM_FACES, m->items, sizeof(CUSTOM_FACES));
+    free(m);
+    custom_faces_changed();
+}
+
+static esp_err_t h_faces_set(httpd_req_t *req)
+{
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
+    char *body = read_body(req, 3072, NULL);
+    cJSON *j = body ? cJSON_Parse(body) : NULL;
+    free(body);
+    if (!cJSON_IsArray(j) || cJSON_GetArraySize(j) < 1) {
+        cJSON_Delete(j);
+        return fail(req, "expected at least one face");
+    }
+    faces_msg_t *m = calloc(1, sizeof(*m));
+    if (!m) {
+        cJSON_Delete(j);
+        return httpd_resp_send_500(req);
+    }
+    int n = cJSON_GetArraySize(j);
+    if (n > CUSTOM_FACE_MAX) n = CUSTOM_FACE_MAX;
+    m->count = n;
+    for (int i = 0; i < n; i++) {
+        cJSON *o = cJSON_GetArrayItem(j, i);
+        const char *name = str_of(o, "name");
+        const char *bg = str_of(o, "bg");
+        strlcpy(m->items[i].name, (name && name[0]) ? name : "Custom", sizeof(m->items[i].name));
+        int style = num_of(o, "style");
+        int accent = num_of(o, "accent");
+        int photo_idx = num_of(o, "photo_idx");
+        m->items[i].style = (uint8_t)(style >= 0 && style < CF_STYLE_COUNT ? style : 0);
+        m->items[i].accent = (uint8_t)(accent >= 0 && accent < 6 ? accent : 0);
+        m->items[i].photo_idx = (uint8_t)(photo_idx >= 0 && photo_idx <= PHOTO_LIMIT ? photo_idx : 0);
+        m->items[i].show_date = cJSON_IsTrue(cJSON_GetObjectItem(o, "show_date")) ? 1 : 0;
+        m->items[i].show_comps = cJSON_IsTrue(cJSON_GetObjectItem(o, "show_comps")) ? 1 : 0;
+        if (bg && bg[0] == '#') m->items[i].bg_hex = (uint32_t)strtoul(bg + 1, NULL, 16) & 0xFFFFFF;
+    }
+    cJSON_Delete(j);
+    ui_post(faces_apply, m);
+    return send_ok(req);
+}
+
 /* ---------------------------------------------------------------- secrets */
 
 /* Write-only: values go into flash and are never served back. */
 static esp_err_t h_secrets(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     static const char *const keys[] = {"ai_key", "ai_chat", "ai_stt", "ai_tts", "ai_voice", "cam_ssid", "cam_pass", "tile_url"};
     char *body = read_body(req, 1024, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
-    free(body);
+    if (body) {
+        memset(body, 0, strlen(body));
+        free(body);
+    }
     if (!cJSON_IsObject(j)) {
         cJSON_Delete(j);
         return fail(req, "expected an object");
@@ -373,6 +487,7 @@ static esp_err_t h_secrets(httpd_req_t *req)
 
 static esp_err_t h_tiles(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     char *body = read_body(req, 256, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
@@ -416,6 +531,7 @@ static void restart_task(void *arg)
  * nobody else on the network can replace the firmware. */
 static esp_err_t h_update(httpd_req_t *req)
 {
+    if (!origin_ok(req)) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin rejected");
     if (!update_until || (int32_t)(update_until - svc_millis()) < 0) {
         return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "On the watch: Settings, System, Allow update");
     }
@@ -471,6 +587,8 @@ void web_start(void)
         {.uri = "/photos/*", .method = HTTP_GET, .handler = h_photo_get},
         {.uri = "/api/macros", .method = HTTP_GET, .handler = h_macro_get},
         {.uri = "/api/macros", .method = HTTP_POST, .handler = h_macro_set},
+        {.uri = "/api/faces", .method = HTTP_GET, .handler = h_faces_get},
+        {.uri = "/api/faces", .method = HTTP_POST, .handler = h_faces_set},
         {.uri = "/api/secrets", .method = HTTP_POST, .handler = h_secrets},
         {.uri = "/api/tiles", .method = HTTP_POST, .handler = h_tiles},
         {.uri = "/api/update", .method = HTTP_POST, .handler = h_update},

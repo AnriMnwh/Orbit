@@ -230,7 +230,11 @@ void notif_clear(void);
 
 /* ---------------------------------------------------------------- settings */
 
-enum { FACE_DIGITAL, FACE_ANALOG, FACE_PHOTO, FACE_VISION, FACE_ZZZ, FACE_COUNT };
+enum {
+    FACE_DIGITAL, FACE_ANALOG, FACE_PHOTO, FACE_VISION, FACE_ZZZ,
+    FACE_MODULAR, FACE_MINIMAL, FACE_CUSTOM,
+    FACE_COUNT,
+};
 enum { AOD_OFF, AOD_CLOCK, AOD_PHOTOS, AOD_COUNT };
 /* What the two rings on the digital face show. */
 enum { COMP_BATTERY, COMP_STEPS, COMP_WEATHER, COMP_DAY, COMP_NONE, COMP_COUNT };
@@ -259,6 +263,7 @@ typedef struct {
     uint8_t volume;           /* speaker volume, 0..100 */
     uint8_t previews;         /* new notifications take over the screen briefly */
     uint8_t charge_limit;     /* battery health: cap charging at 80% */
+    uint8_t custom_face;      /* active slot in CUSTOM_FACES[] when face == FACE_CUSTOM */
     uint16_t step_goal;
 } settings_t;
 
@@ -284,6 +289,25 @@ extern macro_t MACROS[MACRO_MAX];
 void macros_load(void);
 void macros_changed(void);
 void macro_fire(int index);
+
+/* ----------------------------------------------------------- custom faces */
+
+#define CUSTOM_FACE_MAX 6
+enum { CF_STYLE_DIGITAL, CF_STYLE_COMPACT, CF_STYLE_ANALOG, CF_STYLE_MINIMAL, CF_STYLE_COUNT };
+typedef struct {
+    char name[16];
+    uint8_t style;     /* CF_STYLE_* */
+    uint8_t accent;    /* index into accent palette */
+    uint8_t photo_idx; /* 0 = solid bg_hex, 1..N = 1-based photo index */
+    uint8_t show_date;
+    uint8_t show_comps;
+    uint32_t bg_hex;   /* solid background colour when photo_idx == 0 */
+} custom_face_t;
+
+extern custom_face_t CUSTOM_FACES[CUSTOM_FACE_MAX];
+extern int CUSTOM_FACE_COUNT;
+void custom_faces_load(void);
+void custom_faces_changed(void);
 
 /* ------------------------------------------------------------------- misc */
 

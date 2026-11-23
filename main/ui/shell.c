@@ -721,6 +721,7 @@ void orbit_boot(void)
     S.day.items = lv_malloc_zeroed(sizeof(agenda_item_t) * DAY_MAX);
     settings_load();
     macros_load();
+    custom_faces_load();
     duties_init(); /* restores alarm and step state before the UI reads it */
     zzz_init();
     shell_init();

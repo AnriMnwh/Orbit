@@ -275,7 +275,7 @@ data class WatchConfig(
     )
 
     companion object {
-        val FACES = listOf("Digital", "Analog", "Photo", "Vision", "TV wall")
+        val FACES = listOf("Digital", "Analog", "Photo", "Vision", "TV wall", "Modular", "Minimal", "Custom")
 
         /** The watch's accent colours, as names and 0xRRGGBB. */
         val ACCENTS = listOf(

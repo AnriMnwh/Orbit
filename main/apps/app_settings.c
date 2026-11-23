@@ -465,7 +465,9 @@ static void connectivity_page(void)
 
 static const uint8_t TIMEOUTS[] = {8, 12, 20, 30, 60};
 static const char *const AOD_NAMES[AOD_COUNT] = {"Off", "Clock", "Photos"};
-static const char *const FACE_NAMES[FACE_COUNT] = {"Digital", "Analog", "Photo", "Vision", "TV wall"};
+static const char *const FACE_NAMES[FACE_COUNT] = {
+    "Digital", "Analog", "Photo", "Vision", "TV wall", "Modular", "Minimal", "Custom",
+};
 static const char *const ACCENT_NAMES[ACCENT_COUNT] = {"Sky", "Mint", "Rose", "Violet", "Peach", "Sun"};
 static const char *const COMP_NAMES[COMP_COUNT] = {"Battery", "Steps", "Weather", "Day", "None"};
 static const char *const TILE_NAMES[TILE_KINDS] = {"", "Music", "Activity", "Weather", "Timer", "Alarm", "Pet", "Agenda"};

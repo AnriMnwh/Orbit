@@ -92,7 +92,7 @@ enum {
     Q_COUNT,
 };
 
-static lv_obj_t *q_batt, *q_link, *q_slider, *q_btn[Q_COUNT];
+static lv_obj_t *q_batt, *q_link, *q_slider, *q_vol, *q_btn[Q_COUNT];
 static bool q_ringing;
 
 static bool quick_state(int id)
@@ -129,6 +129,8 @@ static void quick_refresh(void)
     }
     lv_slider_set_value(q_slider, CFG.brightness, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(q_slider, acc, LV_PART_INDICATOR);
+    lv_slider_set_value(q_vol, CFG.volume, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(q_vol, acc, LV_PART_INDICATOR);
 }
 
 static void quick_tap(lv_event_t *e)
@@ -187,6 +189,40 @@ static void quick_brightness(lv_event_t *e)
     else svc_brightness(CFG.brightness);
 }
 
+static void quick_volume(lv_event_t *e)
+{
+    lv_obj_t *s = lv_event_get_target_obj(e);
+    CFG.volume = (uint8_t)lv_slider_get_value(s);
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        settings_changed();
+        if (CFG.sound && CFG.volume > 0) svc_sound(SND_TAP);
+    }
+}
+
+static lv_obj_t *quick_slider(lv_obj_t *col, const lv_image_dsc_t *icon, int y, int min, lv_event_cb_t cb)
+{
+    lv_obj_t *ic = ui_icon(col, icon, C_DIM);
+    lv_obj_set_pos(ic, 96, y);
+    lv_obj_t *s = lv_slider_create(col);
+    lv_obj_remove_style_all(s);
+    lv_obj_set_size(s, 220, 14);
+    lv_obj_set_pos(s, 140, y + 7);
+    lv_slider_set_range(s, min, 100);
+    lv_obj_set_style_radius(s, 7, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s, C_SURF2, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(s, 7, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(s, C_TEXT, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(s, LV_OPA_COVER, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s, 9, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(s, 18);
+    lv_obj_add_event_cb(s, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s, cb, LV_EVENT_RELEASED, NULL);
+    return s;
+}
+
 static void quick_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
@@ -211,41 +247,24 @@ void quick_create(lv_obj_t *tile)
     lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
 
     q_batt = ui_label(col, "", F24, C_TEXT);
-    lv_obj_align(q_batt, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_align(q_batt, LV_ALIGN_TOP_MID, 0, 32);
     q_link = ui_label_fit(col, "", F16, C_DIM, 250);
-    lv_obj_align(q_link, LV_ALIGN_TOP_MID, 0, 72);
+    lv_obj_align(q_link, LV_ALIGN_TOP_MID, 0, 64);
 
-    /* Brightness slider right at the top of the control centre so it is
-     * immediately reachable without scrolling. */
-    lv_obj_t *sun = ui_icon(col, &ic_sun_28, C_DIM);
-    lv_obj_set_pos(sun, 96, 110);
-    q_slider = lv_slider_create(col);
-    lv_obj_remove_style_all(q_slider);
-    lv_obj_set_size(q_slider, 220, 14);
-    lv_obj_set_pos(q_slider, 140, 117);
-    lv_slider_set_range(q_slider, 5, 100);
-    lv_obj_set_style_radius(q_slider, 7, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(q_slider, C_SURF2, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(q_slider, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(q_slider, 7, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(q_slider, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(q_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-    lv_obj_set_style_bg_color(q_slider, C_TEXT, LV_PART_KNOB);
-    lv_obj_set_style_bg_opa(q_slider, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(q_slider, 9, LV_PART_KNOB);
-    lv_obj_set_ext_click_area(q_slider, 22);
-    lv_obj_add_event_cb(q_slider, quick_brightness, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(q_slider, quick_brightness, LV_EVENT_RELEASED, NULL);
+    /* Brightness and volume sliders right at the top of the control centre so
+     * both are immediately reachable without scrolling. */
+    q_slider = quick_slider(col, &ic_sun_28, 98, 5, quick_brightness);
+    q_vol = quick_slider(col, &ic_vol_up_28, 142, 0, quick_volume);
 
     const int sz = 88, gap = 104;
     for (int i = 0; i < Q_COUNT; i++) {
         q_btn[i] = ui_round_btn(col, sz, C_SURF2, icons[i], C_TEXT, quick_tap, (void *)(intptr_t)i);
         lv_obj_set_ext_click_area(q_btn[i], 4);
         int x = SCR_C - sz / 2 + (i % 3 - 1) * gap;
-        lv_obj_set_pos(q_btn[i], x, 162 + (i / 3) * gap);
+        lv_obj_set_pos(q_btn[i], x, 194 + (i / 3) * gap);
     }
     /* Room to scroll the last row comfortably into the middle. */
-    lv_obj_set_pos(ui_box(col, 10, 10), 0, 640);
+    lv_obj_set_pos(ui_box(col, 10, 10), 0, 668);
 
     bus_watch(tile, quick_event, NULL);
     quick_refresh();
@@ -360,16 +379,36 @@ static void notifs_refresh(void)
     ui_list_refresh(n_list);
 }
 
+static bool n_pending;
+
+static void notifs_refresh_async(void *arg)
+{
+    LV_UNUSED(arg);
+    n_pending = false;
+    if (n_list) notifs_refresh();
+}
+
 static void notifs_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_NOTIF || e == EVT_MINUTE) notifs_refresh();
+    if ((e == EVT_NOTIF || e == EVT_MINUTE) && !n_pending) {
+        n_pending = true;
+        lv_async_call(notifs_refresh_async, NULL);
+    }
+}
+
+static void notifs_deleted(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    n_list = NULL;
+    n_pending = false;
 }
 
 void notifs_create(lv_obj_t *tile)
 {
     n_list = ui_list(tile);
+    lv_obj_add_event_cb(n_list, notifs_deleted, LV_EVENT_DELETE, NULL);
     bus_watch(tile, notifs_event, NULL);
     notifs_refresh();
 }

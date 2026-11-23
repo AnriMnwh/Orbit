@@ -87,7 +87,7 @@ void notif_clear(void)
 
 /* ---------------------------------------------------------------- settings */
 
-#define CFG_VERSION 5
+#define CFG_VERSION 6
 
 settings_t CFG;
 
@@ -202,6 +202,58 @@ void macro_fire(int index)
     case MACRO_TEXT: svc_hid_text(m->text); break;
     case MACRO_MEDIA: svc_hid_consumer(m->usage); break;
     }
+}
+
+/* ----------------------------------------------------------- custom faces */
+
+typedef struct {
+    uint8_t count;
+    custom_face_t items[CUSTOM_FACE_MAX];
+} custom_faces_blob_t;
+
+custom_face_t CUSTOM_FACES[CUSTOM_FACE_MAX];
+int CUSTOM_FACE_COUNT;
+
+static void custom_faces_defaults(void)
+{
+    CUSTOM_FACE_COUNT = 2;
+    memset(CUSTOM_FACES, 0, sizeof(CUSTOM_FACES));
+    CUSTOM_FACES[0] = (custom_face_t){
+        .name = "Midnight", .style = CF_STYLE_MINIMAL, .accent = 0,
+        .photo_idx = 0, .show_date = 1, .show_comps = 0, .bg_hex = 0x071224,
+    };
+    CUSTOM_FACES[1] = (custom_face_t){
+        .name = "Ember", .style = CF_STYLE_COMPACT, .accent = 4,
+        .photo_idx = 0, .show_date = 1, .show_comps = 1, .bg_hex = 0x1A0B0A,
+    };
+}
+
+void custom_faces_load(void)
+{
+    custom_faces_blob_t b;
+    if (!svc_kv_load("cfaces", &b, sizeof(b)) || b.count == 0 || b.count > CUSTOM_FACE_MAX) {
+        custom_faces_defaults();
+        return;
+    }
+    CUSTOM_FACE_COUNT = b.count;
+    memcpy(CUSTOM_FACES, b.items, sizeof(CUSTOM_FACES));
+    for (int i = 0; i < CUSTOM_FACE_COUNT; i++) {
+        CUSTOM_FACES[i].name[sizeof(CUSTOM_FACES[i].name) - 1] = 0;
+        if (CUSTOM_FACES[i].style >= CF_STYLE_COUNT) CUSTOM_FACES[i].style = CF_STYLE_DIGITAL;
+        if (CUSTOM_FACES[i].accent >= 6) CUSTOM_FACES[i].accent = 0;
+    }
+    if (CFG.custom_face >= CUSTOM_FACE_COUNT) CFG.custom_face = 0;
+}
+
+void custom_faces_changed(void)
+{
+    if (CUSTOM_FACE_COUNT < 1) custom_faces_defaults();
+    if (CUSTOM_FACE_COUNT > CUSTOM_FACE_MAX) CUSTOM_FACE_COUNT = CUSTOM_FACE_MAX;
+    if (CFG.custom_face >= CUSTOM_FACE_COUNT) CFG.custom_face = 0;
+    custom_faces_blob_t b = {.count = (uint8_t)CUSTOM_FACE_COUNT};
+    memcpy(b.items, CUSTOM_FACES, sizeof(b.items));
+    svc_kv_save("cfaces", &b, sizeof(b));
+    bus_emit(EVT_SETTINGS, NULL);
 }
 
 /* -------------------------------------------------------------- formatting */

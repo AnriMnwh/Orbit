@@ -63,6 +63,7 @@ int http_request(const http_request_t *q, http_reply_t *reply)
         if (h) {
             snprintf(h, n, "Bearer %s", q->bearer);
             esp_http_client_set_header(c, "Authorization", h);
+            memset(h, 0, n);
             free(h);
         }
     }

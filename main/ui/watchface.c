@@ -19,7 +19,8 @@ static const char *const MONTHS[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
 typedef struct {
     lv_obj_t *root;
     lv_obj_t *hours, *minutes, *time, *date;
-    lv_obj_t *comp_arc[2], *comp_text[2];
+    lv_obj_t *comp_arc[3], *comp_text[3];
+    uint8_t comp_kind[3];
     lv_obj_t *status, *analog, *charge_arc, *charge_text;
     uint8_t face;
     bool ambient; /* the dim always-on version: fewer lit pixels, no seconds */
@@ -27,8 +28,9 @@ typedef struct {
 } face_t;
 
 static face_t live;
-static uint8_t built_accent, built_24h, built_comp[2];
+static uint8_t built_accent, built_24h, built_comp[2], built_custom;
 static bool previewing; /* set while the picker builds its copies */
+static char last_ongoing[32];
 
 static void fmt_date(char *buf, size_t len, const struct tm *t)
 {
@@ -110,20 +112,25 @@ static const lv_image_dsc_t *comp_icon(int kind)
     }
 }
 
-static void comp_build(face_t *f, int side, int kind)
+static void comp_build_at(face_t *f, int slot, int kind, int x, int y, lv_color_t color)
 {
-    if (kind == COMP_NONE) return;
-    lv_color_t color = side == 0 ? ui_accent() : C_TEXT;
+    if (kind == COMP_NONE || slot < 0 || slot >= 3) return;
+    f->comp_kind[slot] = (uint8_t)kind;
     lv_obj_t *box = ui_box(f->root, 84, 84);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(box, LV_ALIGN_CENTER, side == 0 ? -172 : 172, 0);
-    f->comp_arc[side] = ui_arc(box, 84, 7, C_SURF2, color, 135, 270);
-    lv_obj_center(f->comp_arc[side]);
-    f->comp_text[side] = ui_label(box, "", F20, C_TEXT);
-    lv_obj_align(f->comp_text[side], LV_ALIGN_CENTER, 0, -3);
+    lv_obj_align(box, LV_ALIGN_CENTER, x, y);
+    f->comp_arc[slot] = ui_arc(box, 84, 7, C_SURF2, color, 135, 270);
+    lv_obj_center(f->comp_arc[slot]);
+    f->comp_text[slot] = ui_label(box, "", F20, C_TEXT);
+    lv_obj_align(f->comp_text[slot], LV_ALIGN_CENTER, 0, -3);
     lv_obj_t *i = ui_icon(box, comp_icon(kind), color);
     lv_image_set_scale(i, 150);
     lv_obj_align(i, LV_ALIGN_BOTTOM_MID, 0, 6);
+}
+
+static void comp_build(face_t *f, int side, int kind)
+{
+    comp_build_at(f, side, kind, side == 0 ? -172 : 172, 0, side == 0 ? ui_accent() : C_TEXT);
 }
 
 static void comp_refresh(face_t *f, int side, int kind)
@@ -256,8 +263,9 @@ static void face_time(face_t *f)
 static void face_refresh(face_t *f)
 {
     face_time(f);
-    comp_refresh(f, 0, CFG.comp_left);
-    comp_refresh(f, 1, CFG.comp_right);
+    for (int i = 0; i < 3; i++) {
+        if (f->comp_arc[i]) comp_refresh(f, i, f->comp_kind[i]);
+    }
     status_refresh(f);
 }
 
@@ -351,6 +359,182 @@ static void build_zzz(face_t *f)
     lv_obj_align(f->status, LV_ALIGN_BOTTOM_MID, 0, -26);
 }
 
+/* Wear OS Modular dashboard: date at top, crisp horizontal clock, three live
+ * complication pods across the lower half. */
+static void build_modular(face_t *f)
+{
+    lv_color_t acc = ui_accent();
+    f->date = ui_label(f->root, "", F20, f->ambient ? C_FAINT : acc);
+    lv_obj_set_style_text_letter_space(f->date, 3, 0);
+    lv_obj_align(f->date, LV_ALIGN_TOP_MID, 0, 56);
+
+    f->time = ui_label(f->root, "", f->ambient ? &font_num_mid : &font_num_big, f->ambient ? C_DIM : C_TEXT);
+    lv_obj_align(f->time, LV_ALIGN_CENTER, 0, f->ambient ? 0 : -44);
+    if (f->ambient) return;
+
+    comp_build_at(f, 0, COMP_BATTERY, -106, 76, acc);
+    comp_build_at(f, 1, COMP_STEPS, 0, 102, C_TEXT);
+    comp_build_at(f, 2, COMP_WEATHER, 106, 76, lv_color_hex(0x58B6FF));
+    if (previewing) return;
+    f->status = status_row(f->root);
+    lv_obj_align(f->status, LV_ALIGN_BOTTOM_MID, 0, -26);
+}
+
+/* Bauhaus / Pixel Watch Minimal: 12 clean baton indices, slender precision
+ * hands, cardinal accents, and a pill date window at 3 o'clock. */
+static void minimal_draw(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_target_obj(e);
+    uintptr_t flags = (uintptr_t)lv_event_get_user_data(e);
+    bool ambient = (flags & 1) != 0;
+    lv_color_t acc = (flags >> 8) ? ui_accent_at((int)((flags >> 8) - 1)) : ui_accent();
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+
+    struct tm t;
+    svc_localtime(&t);
+
+    for (int i = 0; i < 12; i++) {
+        bool card = i % 3 == 0;
+        if (ambient && !card) continue;
+        stroke(layer, &a, i * 30.0f, card ? 190 : 204, 218, card ? (ambient ? 3 : 6) : 3,
+               card ? (ambient ? C_DIM : acc) : C_FAINT);
+    }
+    float m = t.tm_min + (ambient ? 0 : t.tm_sec / 60.0f);
+    float h = (t.tm_hour % 12) + m / 60.0f;
+    stroke(layer, &a, h * 30.0f, 0, 112, ambient ? 5 : 10, ambient ? C_DIM : C_TEXT);
+    stroke(layer, &a, m * 6.0f, 0, 174, ambient ? 3 : 6, ambient ? C_DIM : C_TEXT);
+    if (ambient) return;
+    stroke(layer, &a, t.tm_sec * 6.0f, -28, 192, 2, acc);
+
+    lv_draw_rect_dsc_t cap;
+    lv_draw_rect_dsc_init(&cap);
+    cap.radius = LV_RADIUS_CIRCLE;
+    cap.bg_color = acc;
+    lv_area_t c = {a.x1 + SCR_C - 7, a.y1 + SCR_C - 7, a.x1 + SCR_C + 7, a.y1 + SCR_C + 7};
+    lv_draw_rect(layer, &cap, &c);
+}
+
+static void build_minimal(face_t *f)
+{
+    f->analog = ui_box(f->root, SCR, SCR);
+    lv_obj_remove_flag(f->analog, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(f->analog, minimal_draw, LV_EVENT_DRAW_MAIN, (void *)(uintptr_t)(f->ambient ? 1 : 0));
+
+    if (!f->ambient) {
+        f->date = ui_label(f->root, "", F16, C_TEXT);
+        lv_obj_set_style_bg_color(f->date, C_SURF, 0);
+        lv_obj_set_style_bg_opa(f->date, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_hor(f->date, 10, 0);
+        lv_obj_set_style_pad_ver(f->date, 4, 0);
+        lv_obj_set_style_radius(f->date, 12, 0);
+        lv_obj_align(f->date, LV_ALIGN_CENTER, 0, 88);
+    }
+    if (f->ambient || previewing) return;
+    f->status = status_row(f->root);
+    lv_obj_align(f->status, LV_ALIGN_CENTER, 0, -96);
+}
+
+static void custom_cycle(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (CUSTOM_FACE_COUNT <= 1) return;
+    CFG.custom_face = (uint8_t)((CFG.custom_face + 1) % CUSTOM_FACE_COUNT);
+    settings_changed();
+    shell_toast(CUSTOM_FACES[CFG.custom_face].name);
+}
+
+/* User-customisable face: configured from the setup page (http://orbit.local).
+ * Tap to cycle through saved custom faces. */
+static void build_custom(face_t *f)
+{
+    const custom_face_t *cf = &CUSTOM_FACES[CFG.custom_face < CUSTOM_FACE_COUNT ? CFG.custom_face : 0];
+    lv_color_t acc = ui_accent_at(cf->accent);
+
+    if (!f->ambient) {
+        if (cf->photo_idx > 0 && svc_photo_count() > 0) {
+            const lv_image_dsc_t *img = svc_photo((cf->photo_idx - 1) % svc_photo_count());
+            if (img) {
+                lv_obj_t *photo = lv_image_create(f->root);
+                lv_image_set_src(photo, img);
+                lv_obj_center(photo);
+                lv_obj_t *veil = ui_box(f->root, SCR, SCR);
+                lv_obj_remove_flag(veil, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_set_style_bg_color(veil, lv_color_black(), 0);
+                lv_obj_set_style_bg_opa(veil, LV_OPA_40, 0);
+            }
+        } else if (cf->bg_hex != 0) {
+            lv_obj_t *bg = ui_box(f->root, SCR, SCR);
+            lv_obj_remove_flag(bg, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_bg_color(bg, lv_color_hex(cf->bg_hex), 0);
+            lv_obj_set_style_bg_opa(bg, LV_OPA_COVER, 0);
+        }
+    }
+
+    if (cf->style == CF_STYLE_ANALOG) {
+        f->analog = ui_box(f->root, SCR, SCR);
+        lv_obj_remove_flag(f->analog, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(f->analog, analog_draw, LV_EVENT_DRAW_MAIN, f->ambient ? (void *)1 : NULL);
+        if (cf->show_date) {
+            f->date = ui_label(f->root, "", F20, f->ambient ? C_FAINT : C_DIM);
+            lv_obj_set_style_text_letter_space(f->date, 3, 0);
+            lv_obj_align(f->date, LV_ALIGN_CENTER, 0, 96);
+        }
+    } else if (cf->style == CF_STYLE_MINIMAL) {
+        uintptr_t flags = (uintptr_t)(f->ambient ? 1 : 0) | ((uintptr_t)(cf->accent + 1) << 8);
+        f->analog = ui_box(f->root, SCR, SCR);
+        lv_obj_remove_flag(f->analog, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(f->analog, minimal_draw, LV_EVENT_DRAW_MAIN, (void *)flags);
+        if (cf->show_date && !f->ambient) {
+            f->date = ui_label(f->root, "", F16, C_TEXT);
+            lv_obj_set_style_bg_color(f->date, C_SURF, 0);
+            lv_obj_set_style_bg_opa(f->date, LV_OPA_COVER, 0);
+            lv_obj_set_style_pad_hor(f->date, 10, 0);
+            lv_obj_set_style_pad_ver(f->date, 4, 0);
+            lv_obj_set_style_radius(f->date, 12, 0);
+            lv_obj_align(f->date, LV_ALIGN_CENTER, 0, 88);
+        }
+    } else if (cf->style == CF_STYLE_COMPACT) {
+        if (cf->show_date) {
+            f->date = ui_label(f->root, "", F20, f->ambient ? C_FAINT : acc);
+            lv_obj_set_style_text_letter_space(f->date, 3, 0);
+            lv_obj_align(f->date, LV_ALIGN_TOP_MID, 0, 58);
+        }
+        f->time = ui_label(f->root, "", f->ambient ? &font_num_mid : &font_num_big, f->ambient ? C_DIM : C_TEXT);
+        lv_obj_align(f->time, LV_ALIGN_CENTER, 0, cf->show_comps && !f->ambient ? -38 : 0);
+        if (cf->show_comps && !f->ambient) {
+            comp_build_at(f, 0, CFG.comp_left, -74, 82, acc);
+            comp_build_at(f, 1, CFG.comp_right, 74, 82, C_TEXT);
+        }
+    } else {
+        if (cf->show_date) {
+            f->date = ui_label(f->root, "", F20, C_DIM);
+            lv_obj_set_style_text_letter_space(f->date, 3, 0);
+            lv_obj_align(f->date, LV_ALIGN_TOP_MID, 0, 50);
+        }
+        f->hours = ui_label(f->root, "", f->ambient ? &font_num_hero_light : &font_num_hero_bold,
+                            f->ambient ? ui_tint(acc, 70) : acc);
+        lv_obj_align(f->hours, LV_ALIGN_CENTER, 0, -66);
+        f->minutes = ui_label(f->root, "", &font_num_hero_light, f->ambient ? C_DIM : C_TEXT);
+        lv_obj_align(f->minutes, LV_ALIGN_CENTER, 0, 58);
+        if (cf->show_comps && !f->ambient) {
+            comp_build_at(f, 0, CFG.comp_left, -172, 0, acc);
+            comp_build_at(f, 1, CFG.comp_right, 172, 0, C_TEXT);
+        }
+    }
+
+    if (f->ambient || previewing) return;
+    f->status = status_row(f->root);
+    lv_obj_align(f->status, LV_ALIGN_BOTTOM_MID, 0, -34);
+    if (CUSTOM_FACE_COUNT > 1) {
+        lv_obj_t *tap = ui_box(f->root, 200, 120);
+        lv_obj_center(tap);
+        lv_obj_add_flag(tap, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(tap, custom_cycle, LV_EVENT_SHORT_CLICKED, NULL);
+    }
+}
+
 static void face_build(face_t *f, lv_obj_t *root, uint8_t face, bool ambient)
 {
     int photo = f->photo_index;
@@ -361,6 +545,9 @@ static void face_build(face_t *f, lv_obj_t *root, uint8_t face, bool ambient)
     else if (face == FACE_PHOTO) build_photo(f);
     else if (face == FACE_VISION) build_vision(f);
     else if (face == FACE_ZZZ) build_zzz(f);
+    else if (face == FACE_MODULAR) build_modular(f);
+    else if (face == FACE_MINIMAL) build_minimal(f);
+    else if (face == FACE_CUSTOM) build_custom(f);
     else build_digital(f);
 
     /* On the charger, the resting face also shows how full the battery is. */
@@ -377,8 +564,9 @@ static void face_build(face_t *f, lv_obj_t *root, uint8_t face, bool ambient)
 
 static void live_build(void)
 {
-    built_accent = CFG.accent, built_24h = CFG.clock_24h;
+    built_accent = CFG.accent, built_24h = CFG.clock_24h, built_custom = CFG.custom_face;
     built_comp[0] = CFG.comp_left, built_comp[1] = CFG.comp_right;
+    last_ongoing[0] = 0;
     face_build(&live, live.root, CFG.face, false);
 }
 
@@ -395,20 +583,22 @@ static void on_event(evt_t e, void *data, void *user)
     switch (e) {
     case EVT_SETTINGS:
         if (CFG.face != live.face || CFG.accent != built_accent || CFG.clock_24h != built_24h ||
-            CFG.comp_left != built_comp[0] || CFG.comp_right != built_comp[1]) live_build();
+            CFG.comp_left != built_comp[0] || CFG.comp_right != built_comp[1] ||
+            CFG.face == FACE_CUSTOM || CFG.custom_face != built_custom) live_build();
         else status_refresh(&live);
         break;
     case EVT_PHOTOS:
-        if (live.face == FACE_PHOTO) live_build();
+        if (live.face == FACE_PHOTO || live.face == FACE_CUSTOM) live_build();
         break;
     case EVT_SECOND: {
         if (live.analog) lv_obj_invalidate(live.analog);
-        /* A running timer counts down in its chip. */
+        /* Only rebuild the ongoing chip when its text actually changes. */
         ongoing_t o;
-        static bool had;
-        bool has = shell_ongoing(&o);
-        if (has || had) status_refresh(&live);
-        had = has;
+        const char *now_txt = shell_ongoing(&o) ? o.text : "";
+        if (strcmp(now_txt, last_ongoing) != 0) {
+            strlcpy(last_ongoing, now_txt, sizeof(last_ongoing));
+            status_refresh(&live);
+        }
         break;
     }
     case EVT_MINUTE:
@@ -424,8 +614,9 @@ static void on_event(evt_t e, void *data, void *user)
         break;
     case EVT_BATTERY:
     case EVT_WEATHER:
-        comp_refresh(&live, 0, CFG.comp_left);
-        comp_refresh(&live, 1, CFG.comp_right);
+        for (int i = 0; i < 3; i++) {
+            if (live.comp_arc[i]) comp_refresh(&live, i, live.comp_kind[i]);
+        }
         break;
     case EVT_NOTIF:
     case EVT_LINK:
@@ -520,7 +711,9 @@ static void picker_customise(lv_event_t *e)
 /* Swipe through the faces at full size and tap the one you want. */
 static void picker_create(lv_obj_t *scr)
 {
-    static const char *const names[FACE_COUNT] = {"Digital", "Analog", "Photo", "Vision", "TV wall"};
+    static const char *const names[FACE_COUNT] = {
+        "Digital", "Analog", "Photo", "Vision", "TV wall", "Modular", "Minimal", "Custom",
+    };
     static face_t previews[FACE_COUNT];
 
     lv_obj_t *pages = ui_box(scr, SCR, SCR);
