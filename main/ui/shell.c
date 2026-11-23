@@ -184,7 +184,7 @@ void shell_open(const app_t *app)
 
 static void overlay_close(void)
 {
-    if (overlay) lv_obj_delete(overlay);
+    if (overlay) lv_obj_delete_async(overlay);
     overlay = NULL;
 }
 

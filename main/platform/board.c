@@ -486,12 +486,12 @@ static bool display_start(void)
         .tear_avoid_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
         .touch_flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
     };
-    cfg.lv_adapter_cfg.task_stack_size = 12 * 1024; /* the UI draws a lot by hand */
+    cfg.lv_adapter_cfg.task_stack_size = 14 * 1024; /* the UI draws a lot by hand */
     if (esp_lv_adapter_init(&cfg.lv_adapter_cfg) != ESP_OK) return false;
 
     const int buf_lines = 20;
     const bsp_display_config_t panel_cfg = {
-        .max_transfer_sz = BSP_LCD_H_RES * buf_lines * BSP_LCD_BITS_PER_PIXEL / 8,
+        .max_transfer_sz = BSP_LCD_H_RES * BSP_LCD_V_RES * BSP_LCD_BITS_PER_PIXEL / 8,
     };
     esp_lcd_panel_handle_t panel = NULL;
     esp_lcd_panel_io_handle_t io = NULL;

@@ -18,10 +18,12 @@ static lv_obj_t *root, *list;
 static page_fn stack[DEPTH];
 static int scroll_y[DEPTH], depth;
 static bool keep;      /* the top page holds typed text: do not rebuild it under the user */
+static bool show_pending;
 static int wizard = -1; /* current first-boot step, or -1 in plain Settings */
 
-static void show(void)
+static void show_now(void)
 {
+    show_pending = false;
     if (!root || depth == 0) return;
     lv_obj_clean(root);
     list = NULL, keep = false;
@@ -30,6 +32,27 @@ static void show(void)
     lv_obj_update_layout(list);
     lv_obj_scroll_to_y(list, scroll_y[depth - 1], LV_ANIM_OFF);
     ui_list_refresh(list);
+}
+
+static void show_async(void *arg)
+{
+    LV_UNUSED(arg);
+    if (show_pending) show_now();
+}
+
+/* Defer rebuilding when `root` already has children so we never free a button
+ * synchronously inside its own LV_EVENT_CLICKED / SHORT_CLICKED handler. */
+static void show(void)
+{
+    if (!root || depth == 0) return;
+    if (lv_obj_get_child_count(root) == 0) {
+        show_now();
+        return;
+    }
+    if (!show_pending) {
+        show_pending = true;
+        lv_async_call(show_async, NULL);
+    }
 }
 
 static void refresh(void)
@@ -1077,7 +1100,7 @@ static void closed(lv_event_t *e)
     /* Settings and Setup share this file's state; when one hands over to the
      * other, the old screen is deleted after the new one has taken over. */
     if (lv_event_get_target_obj(e) != root) return;
-    root = NULL, list = NULL, depth = 0;
+    root = NULL, list = NULL, depth = 0, show_pending = false;
     /* Leaving setup half-way does not count as done: it returns next start. */
     wizard = -1;
 }

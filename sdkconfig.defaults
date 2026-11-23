@@ -12,7 +12,9 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=256
+# Route all general malloc() calls (including LVGL's small objects/styles) to
+# the 8 MB PSRAM so opening menus/apps never exhausts internal DMA RAM.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
 # --- Internal RAM is the scarce resource (about 150 KB for both radios and
