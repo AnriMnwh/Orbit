@@ -488,10 +488,12 @@ static bool display_start(void)
     };
     cfg.lv_adapter_cfg.task_stack_size = 14 * 1024; /* the UI draws a lot by hand */
     cfg.lv_adapter_cfg.task_core_id = 1;            /* keep Core 0 dedicated to Wi-Fi/BLE */
-    cfg.lv_adapter_cfg.task_min_delay_ms = 5;       /* always yield enough to feed IDLE1 WDT */
+    cfg.lv_adapter_cfg.task_min_delay_ms = 2;       /* responsive pacing while feeding IDLE1 WDT */
     if (esp_lv_adapter_init(&cfg.lv_adapter_cfg) != ESP_OK) return false;
 
-    const int buf_lines = 20;
+    /* Two 24-line internal DMA buffers (44.7 KB total) overlap CPU rendering
+     * on Core 1 with QSPI DMA transfer for near wire-speed (~45 fps) swipes. */
+    const int buf_lines = 24;
     const bsp_display_config_t panel_cfg = {
         .max_transfer_sz = BSP_LCD_H_RES * BSP_LCD_V_RES * BSP_LCD_BITS_PER_PIXEL / 8,
     };
@@ -510,7 +512,7 @@ static bool display_start(void)
             .buffer_height = buf_lines,
             .use_psram = false,
             .enable_ppa_accel = false,
-            .require_double_buffer = false,
+            .require_double_buffer = true,
         },
         .tear_avoid_mode = cfg.tear_avoid_mode,
     };
