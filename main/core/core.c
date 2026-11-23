@@ -117,7 +117,13 @@ static void settings_defaults(void)
 
 void settings_load(void)
 {
-    if (!svc_kv_load("cfg", &CFG, sizeof(CFG)) || CFG.version != CFG_VERSION) settings_defaults();
+    if (!svc_kv_load("cfg", &CFG, sizeof(CFG)) || (CFG.version != CFG_VERSION && CFG.version != 5)) {
+        settings_defaults();
+    } else if (CFG.version == 5) {
+        /* v5 -> v6: custom_face occupies the former padding byte before step_goal. */
+        CFG.custom_face = 0;
+        CFG.version = CFG_VERSION;
+    }
     if (CFG.brightness < 5) CFG.brightness = 5;
     if (CFG.timeout_s < 5) CFG.timeout_s = 5;
     if (CFG.face >= FACE_COUNT) CFG.face = FACE_DIGITAL;
@@ -213,6 +219,7 @@ typedef struct {
 
 custom_face_t CUSTOM_FACES[CUSTOM_FACE_MAX];
 int CUSTOM_FACE_COUNT;
+uint32_t CUSTOM_FACES_GEN;
 
 static void custom_faces_defaults(void)
 {
@@ -253,6 +260,7 @@ void custom_faces_changed(void)
     custom_faces_blob_t b = {.count = (uint8_t)CUSTOM_FACE_COUNT};
     memcpy(b.items, CUSTOM_FACES, sizeof(b.items));
     svc_kv_save("cfaces", &b, sizeof(b));
+    CUSTOM_FACES_GEN++;
     bus_emit(EVT_SETTINGS, NULL);
 }
 

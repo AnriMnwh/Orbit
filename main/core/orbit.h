@@ -306,6 +306,7 @@ typedef struct {
 
 extern custom_face_t CUSTOM_FACES[CUSTOM_FACE_MAX];
 extern int CUSTOM_FACE_COUNT;
+extern uint32_t CUSTOM_FACES_GEN;
 void custom_faces_load(void);
 void custom_faces_changed(void);
 

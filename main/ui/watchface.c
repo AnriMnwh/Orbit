@@ -29,6 +29,7 @@ typedef struct {
 
 static face_t live;
 static uint8_t built_accent, built_24h, built_comp[2], built_custom;
+static uint32_t built_custom_gen;
 static bool previewing; /* set while the picker builds its copies */
 static char last_ongoing[32];
 
@@ -565,6 +566,7 @@ static void face_build(face_t *f, lv_obj_t *root, uint8_t face, bool ambient)
 static void live_build(void)
 {
     built_accent = CFG.accent, built_24h = CFG.clock_24h, built_custom = CFG.custom_face;
+    built_custom_gen = CUSTOM_FACES_GEN;
     built_comp[0] = CFG.comp_left, built_comp[1] = CFG.comp_right;
     last_ongoing[0] = 0;
     face_build(&live, live.root, CFG.face, false);
@@ -584,7 +586,8 @@ static void on_event(evt_t e, void *data, void *user)
     case EVT_SETTINGS:
         if (CFG.face != live.face || CFG.accent != built_accent || CFG.clock_24h != built_24h ||
             CFG.comp_left != built_comp[0] || CFG.comp_right != built_comp[1] ||
-            CFG.face == FACE_CUSTOM || CFG.custom_face != built_custom) live_build();
+            CFG.custom_face != built_custom ||
+            (CFG.face == FACE_CUSTOM && built_custom_gen != CUSTOM_FACES_GEN)) live_build();
         else status_refresh(&live);
         break;
     case EVT_PHOTOS:
