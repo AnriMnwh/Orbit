@@ -5,6 +5,7 @@
  * the way out and averaged on the way in.
  */
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,8 +33,6 @@ static SemaphoreHandle_t rec_done;
 static QueueHandle_t sounds;
 static volatile bool stop_flag, recording;
 static volatile float level;
-static int16_t *rec_buf;
-static size_t rec_len;
 static int16_t bus_stereo[CHUNK * 2]; /* shared under bus_lock to save internal BSS */
 
 float audio_level(void)
@@ -97,53 +96,91 @@ void audio_play(const int16_t *pcm, size_t samples, int rate)
 
 /* ---------------------------------------------------------------- record */
 
+/* One recording. The record task and audio_record_stop() share it: whichever
+ * finishes last frees it, so a stop that times out (the task still blocked
+ * reading the microphone) can never leave the task writing into freed memory. */
+enum { REC_RUNNING, REC_DONE, REC_ABANDONED };
+
+typedef struct {
+    int16_t *buf;
+    size_t len;
+    volatile bool stop;
+    atomic_int state;
+} rec_t;
+
+static rec_t *rec; /* the recording audio_record_stop() will collect */
+
 static void record_task(void *arg)
 {
-    LV_UNUSED(arg);
+    rec_t *r = arg;
     const size_t cap = REC_RATE * REC_MAX_SECONDS;
     xSemaphoreTake(bus_lock, portMAX_DELAY);
     if (bus_open(REC_RATE)) {
-        while (recording && rec_len + CHUNK <= cap) {
+        while (!r->stop && r->len + CHUNK <= cap) {
             if (esp_codec_dev_read(mic, bus_stereo, sizeof(bus_stereo)) != ESP_CODEC_DEV_OK) break;
-            for (size_t i = 0; i < CHUNK; i++) rec_buf[rec_len + i] = (int16_t)((bus_stereo[2 * i] + bus_stereo[2 * i + 1]) / 2);
-            level = peak_of(rec_buf + rec_len, CHUNK, 4);
-            rec_len += CHUNK;
+            for (size_t i = 0; i < CHUNK; i++) r->buf[r->len + i] = (int16_t)((bus_stereo[2 * i] + bus_stereo[2 * i + 1]) / 2);
+            level = peak_of(r->buf + r->len, CHUNK, 4);
+            r->len += CHUNK;
         }
         bus_close();
     }
-    recording = false;
+    if (rec == r) recording = false; /* ran out of room or the codec failed */
     xSemaphoreGive(bus_lock);
-    xSemaphoreGive(rec_done);
+    int before = atomic_exchange(&r->state, REC_DONE);
+    if (before == REC_ABANDONED) {
+        free(r->buf);
+        free(r);
+    } else {
+        xSemaphoreGive(rec_done);
+    }
     vTaskDelete(NULL);
 }
 
 bool audio_record_start(void)
 {
     if (!mic || !bus_lock || recording) return false;
-    rec_buf = heap_caps_malloc(REC_RATE * REC_MAX_SECONDS * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    if (!rec_buf) return false;
-    rec_len = 0;
+    rec_t *r = calloc(1, sizeof(*r));
+    if (!r) return false;
+    r->buf = heap_caps_malloc(REC_RATE * REC_MAX_SECONDS * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!r->buf) {
+        free(r);
+        return false;
+    }
     stop_flag = true; /* cut off anything still playing */
+    rec = r;
     recording = true;
     xSemaphoreTake(rec_done, 0);
-    if (xTaskCreate(record_task, "record", 4096, NULL, 6, NULL) != pdPASS) {
+    if (xTaskCreate(record_task, "record", 4096, r, 6, NULL) != pdPASS) {
         recording = false;
-        free(rec_buf);
-        rec_buf = NULL;
+        rec = NULL;
+        free(r->buf);
+        free(r);
         return false;
     }
     return true;
 }
 
+/* Returns the recording (caller frees), or NULL with *samples = 0 if there is
+ * none or the microphone did not let go in time. */
 int16_t *audio_record_stop(size_t *samples)
 {
     *samples = 0;
-    if (!rec_buf) return NULL;
+    rec_t *r = rec;
+    if (!r) return NULL;
+    rec = NULL;
+    r->stop = true;
     recording = false;
-    xSemaphoreTake(rec_done, pdMS_TO_TICKS(2000));
-    int16_t *out = rec_buf;
-    *samples = rec_len;
-    rec_buf = NULL;
+    if (xSemaphoreTake(rec_done, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        int expected = REC_RUNNING;
+        if (atomic_compare_exchange_strong(&r->state, &expected, REC_ABANDONED)) {
+            return NULL; /* the task still owns it and frees it when it ends */
+        }
+        /* It finished just now; its give is on the way. */
+        xSemaphoreTake(rec_done, pdMS_TO_TICKS(1000));
+    }
+    int16_t *out = r->buf;
+    *samples = r->len;
+    free(r);
     return out;
 }
 
@@ -155,7 +192,6 @@ typedef struct {
 
 static void play_tones(const tone_t *t, int n)
 {
-    static int16_t buf[REC_RATE / 4];
     if (!bus_lock || recording) return;
     xSemaphoreTake(bus_lock, portMAX_DELAY);
     stop_flag = false;
@@ -164,17 +200,20 @@ static void play_tones(const tone_t *t, int n)
     if (bus_open(REC_RATE)) {
         for (int k = 0; k < n && !stop_flag; k++) {
             size_t len = (size_t)REC_RATE * t[k].ms / 1000;
-            if (len > sizeof(buf) / sizeof(buf[0])) len = sizeof(buf) / sizeof(buf[0]);
-            for (size_t i = 0; i < len; i++) {
-                /* Quick fade in and out so tones do not click. */
-                float env = 1.0f;
-                if (i < 80) env = (float)i / 80.0f;
-                if (len - i < 240) env = (float)(len - i) / 240.0f;
-                buf[i] = t[k].hz ? (int16_t)(9000.0f * env * sinf(6.2831853f * t[k].hz * (float)i / REC_RATE)) : 0;
-            }
+            if (len > REC_RATE / 4) len = REC_RATE / 4;
+            /* Each chunk is computed straight into the shared stereo buffer, so no
+             * tone-sized buffer sits in internal RAM. */
             for (size_t off = 0; off < len && !stop_flag; off += CHUNK) {
                 size_t chunk = len - off < CHUNK ? len - off : CHUNK;
-                for (size_t i = 0; i < chunk; i++) bus_stereo[2 * i] = bus_stereo[2 * i + 1] = buf[off + i];
+                for (size_t j = 0; j < chunk; j++) {
+                    size_t i = off + j;
+                    /* Quick fade in and out so tones do not click. */
+                    float env = 1.0f;
+                    if (i < 80) env = (float)i / 80.0f;
+                    if (len - i < 240) env = (float)(len - i) / 240.0f;
+                    int16_t v = t[k].hz ? (int16_t)(9000.0f * env * sinf(6.2831853f * t[k].hz * (float)i / REC_RATE)) : 0;
+                    bus_stereo[2 * j] = bus_stereo[2 * j + 1] = v;
+                }
                 esp_codec_dev_write(spk, bus_stereo, (int)(chunk * 4));
             }
         }

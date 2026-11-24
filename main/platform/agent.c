@@ -4,6 +4,7 @@
  * on the setup page because OpenAI retires them regularly; the defaults were
  * current in November 2026.
  */
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +65,7 @@ static struct {
 static TaskHandle_t task;
 static esp_timer_handle_t level_timer;
 static volatile bool cancelled;
+static volatile bool cancel_pending; /* a cancel is waiting for the worker to stop the recording */
 static cJSON *history; /* alternating user / assistant text messages */
 
 /* ------------------------------------------------------------- UI updates */
@@ -94,7 +96,7 @@ static void publish(agent_status_t status, const char *heard, const char *reply,
     if (heard) u->set_heard = true, strlcpy(u->heard, heard, sizeof(u->heard));
     if (reply) u->set_reply = true, strlcpy(u->reply, reply, sizeof(u->reply));
     if (error) strlcpy(u->error, error, sizeof(u->error));
-    ui_post(update_apply, u);
+    if (!ui_post(update_apply, u)) free(u);
 }
 
 static void level_tick(void *arg)
@@ -105,12 +107,23 @@ static void level_tick(void *arg)
 
 /* ------------------------------------------------------------------ tools */
 
+enum { TOOL_PENDING, TOOL_DONE, TOOL_ABANDONED };
+
 typedef struct {
-    const char *name;
-    cJSON *args;
+    char *name; /* owned */
+    cJSON *args; /* owned */
     char result[360];
     SemaphoreHandle_t done;
+    atomic_int state;
 } tool_call_t;
+
+static void tool_free(tool_call_t *t)
+{
+    cJSON_Delete(t->args);
+    free(t->name);
+    if (t->done) vSemaphoreDelete(t->done);
+    free(t);
+}
 
 static const char *arg_str(cJSON *args, const char *key)
 {
@@ -166,7 +179,49 @@ static void tool_run(void *arg)
     } else {
         snprintf(t->result, sizeof(t->result), "unknown tool");
     }
-    xSemaphoreGive(t->done);
+    /* If the caller already gave up waiting, nobody will read the result: free it here. */
+    int expected = TOOL_PENDING;
+    if (atomic_compare_exchange_strong(&t->state, &expected, TOOL_DONE)) xSemaphoreGive(t->done);
+    else tool_free(t);
+}
+
+/* Asks the LVGL thread to run a tool and waits a few seconds for the answer.
+ * Takes ownership of `args`. The call lives on the heap and is shared with the
+ * LVGL thread: if that thread is too busy to answer in time, whichever side
+ * finishes last frees it, so a late answer never lands in a dead stack frame. */
+static void tool_call(const char *name, cJSON *args, char *out, size_t len)
+{
+    tool_call_t *t = calloc(1, sizeof(*t));
+    if (t) {
+        t->name = strdup(name ? name : "");
+        t->args = args;
+        t->done = xSemaphoreCreateBinary();
+    }
+    if (!t || !t->name || !t->done) {
+        if (t) tool_free(t);
+        else cJSON_Delete(args);
+        strlcpy(out, "out of memory", len);
+        return;
+    }
+    if (!ui_post(tool_run, t)) {
+        tool_free(t);
+        strlcpy(out, "the watch is busy", len);
+        return;
+    }
+    bool finished = xSemaphoreTake(t->done, pdMS_TO_TICKS(4000)) == pdTRUE;
+    if (!finished) {
+        int expected = TOOL_PENDING;
+        if (atomic_compare_exchange_strong(&t->state, &expected, TOOL_ABANDONED)) {
+            ESP_LOGW(TAG, "tool %s timed out", name);
+            strlcpy(out, "timed out", len);
+            return; /* tool_run owns it now and frees it */
+        }
+        /* It finished just as we gave up; its give is on the way. */
+        finished = xSemaphoreTake(t->done, pdMS_TO_TICKS(1000)) == pdTRUE;
+    }
+    strlcpy(out, finished ? t->result : "timed out", len);
+    ESP_LOGI(TAG, "tool %s -> %s", name, out);
+    tool_free(t);
 }
 
 /* ---- shared with link.c, which runs the same assistant through the phone ---- */
@@ -178,12 +233,7 @@ const char *agent_tools_json(void)
 
 void agent_run_tool(const char *name, cJSON *args, char *out, size_t len)
 {
-    tool_call_t t = {.name = name, .args = args, .done = xSemaphoreCreateBinary()};
-    ui_post(tool_run, &t);
-    if (xSemaphoreTake(t.done, pdMS_TO_TICKS(4000)) != pdTRUE) snprintf(t.result, sizeof(t.result), "timed out");
-    ESP_LOGI(TAG, "tool %s -> %s", name, t.result);
-    strlcpy(out, t.result, len);
-    vSemaphoreDelete(t.done);
+    tool_call(name, cJSON_Duplicate(args, true), out, len);
 }
 
 void agent_publish(agent_status_t status, const char *heard, const char *reply, const char *error)
@@ -226,6 +276,10 @@ static char *transcribe(const char *key, const int16_t *pcm, size_t samples, con
                             "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"q.wav\"\r\n"
                             "Content-Type: audio/wav\r\n\r\n",
                             model);
+    if (head_len < 0 || head_len >= (int)sizeof(head)) {
+        *err = "The model name is too long";
+        return NULL;
+    }
     static const char tail[] = "\r\n--" BOUNDARY "--\r\n";
     uint32_t data_bytes = (uint32_t)(samples * 2);
     size_t total = (size_t)head_len + 44 + data_bytes + sizeof(tail) - 1;
@@ -335,19 +389,14 @@ static char *chat(const char *key, const char *question, const char **err)
                 cJSON *id = cJSON_GetObjectItem(call, "id");
                 cJSON *name = cJSON_GetObjectItem(fn, "name");
                 cJSON *args = cJSON_GetObjectItem(fn, "arguments");
-                tool_call_t t = {.name = cJSON_IsString(name) ? name->valuestring : "",
-                                 .args = cJSON_Parse(cJSON_IsString(args) ? args->valuestring : "{}"),
-                                 .done = xSemaphoreCreateBinary()};
-                ui_post(tool_run, &t);
-                if (xSemaphoreTake(t.done, pdMS_TO_TICKS(4000)) != pdTRUE) snprintf(t.result, sizeof(t.result), "timed out");
-                ESP_LOGI(TAG, "tool %s -> %s", t.name, t.result);
+                const char *tname = cJSON_IsString(name) ? name->valuestring : "";
+                char result[360];
+                tool_call(tname, cJSON_Parse(cJSON_IsString(args) ? args->valuestring : "{}"), result, sizeof(result));
                 cJSON *out = cJSON_CreateObject();
                 cJSON_AddStringToObject(out, "role", "tool");
                 cJSON_AddStringToObject(out, "tool_call_id", cJSON_IsString(id) ? id->valuestring : "");
-                cJSON_AddStringToObject(out, "content", t.result);
+                cJSON_AddStringToObject(out, "content", result);
                 cJSON_AddItemToArray(messages, out);
-                cJSON_Delete(t.args);
-                vSemaphoreDelete(t.done);
             }
         } else {
             cJSON *content = cJSON_GetObjectItem(msg, "content");
@@ -416,7 +465,7 @@ static void run(void)
     }
     if (!err && !cfg.key[0]) err = "Add your OpenAI key on the setup page";
     bool acquired_net = false;
-    if (!err && !net_online() && svc_configured(HAS_WIFI)) {
+    if (!err && !cancelled && !net_online() && svc_configured(HAS_WIFI)) {
         net_acquire(NET_NEED_AGENT);
         acquired_net = true;
         for (int i = 0; i < 60 && !net_online() && !cancelled; i++) vTaskDelay(pdMS_TO_TICKS(200));
@@ -450,11 +499,14 @@ static void agent_task(void *arg)
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         run();
+        memset(cfg.key, 0, sizeof(cfg.key)); /* only kept while a question is being answered */
+        cancel_pending = false;
     }
 }
 
 static void fail_now(const char *why)
 {
+    memset(cfg.key, 0, sizeof(cfg.key));
     S.agent.status = AGENT_ERROR;
     strlcpy(S.agent.error, why, sizeof(S.agent.error));
     bus_emit(EVT_AGENT, NULL);
@@ -464,7 +516,7 @@ void svc_agent_listen(bool on)
 {
     if (!task) return;
     if (on) {
-        if (S.agent.status != AGENT_IDLE && S.agent.status != AGENT_ERROR) return;
+        if ((S.agent.status != AGENT_IDLE && S.agent.status != AGENT_ERROR) || cancel_pending) return;
         bool phone = link_can_agent(); /* the Orbit app answers; no Wi-Fi or key needed here */
         if (!net_secret_get("ai_key", cfg.key, sizeof(cfg.key)) && !phone) {
             return fail_now("Add your OpenAI key on the setup page");
@@ -493,9 +545,11 @@ void svc_agent_cancel(void)
     link_agent_cancel();
     audio_stop();
     if (S.agent.status == AGENT_LISTENING) {
-        size_t n;
         esp_timer_stop(level_timer);
-        free(audio_record_stop(&n));
+        /* Stopping the recording can take a moment, and this runs on the LVGL
+         * thread, so the worker does it (run() sees `cancelled`) and frees it. */
+        cancel_pending = true;
+        xTaskNotifyGive(task);
     }
     S.agent.status = AGENT_IDLE;
     S.agent.level = 0;

@@ -177,10 +177,13 @@ $('joinBtn').onclick = async () => {
 // ---- photos: crop to a centred square, resize to the panel, upload as JPEG
 async function photos() {
   const list = await api('/api/photos');
-  $('photos').innerHTML = list.map(n => `<div class="ph"><img data-n="${n}" alt=""><button data-n="${n}">Remove</button></div>`).join('');
+  $('photos').innerHTML = list.map(n => `<div class="ph"><img data-n="${esc(n)}" alt=""><button data-n="${esc(n)}">Remove</button></div>`).join('');
   $('photos').querySelectorAll('img').forEach(async img => {
     const r = await apiFetch('/photos/' + img.dataset.n);
-    if (r.ok) img.src = URL.createObjectURL(await r.blob());
+    if (!r.ok) return;
+    /* the picture is decoded once it loads, so the blob can be released */
+    img.onload = () => URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(await r.blob());
   });
   $('photos').querySelectorAll('button').forEach(b => b.onclick = async () => { await api('/api/photos?name=' + b.dataset.n, { method: 'DELETE' }); photos(); });
 }

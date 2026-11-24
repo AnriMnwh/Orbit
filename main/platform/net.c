@@ -4,7 +4,6 @@
 
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_random.h"
@@ -28,8 +27,9 @@ static const char *TAG = "net";
 
 static EventGroupHandle_t events;
 static esp_timer_handle_t retry_timer, setup_timer, ntp_timer;
-static bool wifi_up, want_link, online, setup_mode, camera_mode, sntp_started;
-static bool joining, failed; /* a network picked on the watch is being tried / was refused */
+/* Written by the Wi-Fi event task or the LVGL task and polled by others (dns_task), so volatile. */
+static volatile bool wifi_up, want_link, online, setup_mode, camera_mode, sntp_started;
+static volatile bool joining, failed; /* a network picked on the watch is being tried / was refused */
 static uint8_t net_needs;
 static int join_tries;
 static char link_ssid[33], link_ip[16], setup_pass[12];
@@ -37,25 +37,115 @@ static TaskHandle_t dns_task_handle;
 
 /* ---------------------------------------------------------------- secrets */
 
-bool net_secret_get(const char *key, char *out, size_t len)
+/* The setup-page values live in NVS, but are read by the httpd, tiles, LVGL
+ * and agent tasks often (every status poll, every map tile), so they are
+ * kept in RAM too: loaded once at boot and updated by net_secret_set(). Each
+ * buffer is as big as the code that reads the value expects; the setup page
+ * refuses anything longer. */
+static char v_wifi_ssid[33], v_wifi_pass[65], v_ai_key[200], v_ai_chat[48], v_ai_stt[48], v_ai_tts[48],
+    v_ai_voice[24], v_cam_ssid[33], v_cam_pass[65], v_tile_url[200];
+
+static struct {
+    const char *key;
+    char *val;
+    uint8_t cap;
+    bool loaded;
+} secrets[] = {
+    {"wifi_ssid", v_wifi_ssid, sizeof(v_wifi_ssid), false}, {"wifi_pass", v_wifi_pass, sizeof(v_wifi_pass), false},
+    {"ai_key", v_ai_key, sizeof(v_ai_key), false},          {"ai_chat", v_ai_chat, sizeof(v_ai_chat), false},
+    {"ai_stt", v_ai_stt, sizeof(v_ai_stt), false},          {"ai_tts", v_ai_tts, sizeof(v_ai_tts), false},
+    {"ai_voice", v_ai_voice, sizeof(v_ai_voice), false},    {"cam_ssid", v_cam_ssid, sizeof(v_cam_ssid), false},
+    {"cam_pass", v_cam_pass, sizeof(v_cam_pass), false},    {"tile_url", v_tile_url, sizeof(v_tile_url), false},
+};
+#define SECRET_COUNT (sizeof(secrets) / sizeof(secrets[0]))
+
+/* Guards the buffers above; only ever held for a short copy. */
+static portMUX_TYPE secret_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static int secret_slot(const char *key)
 {
-    nvs_handle_t h;
-    out[0] = 0;
-    if (nvs_open("secrets", NVS_READONLY, &h) != ESP_OK) return false;
-    esp_err_t err = nvs_get_str(h, key, out, &len);
-    nvs_close(h);
-    if (err != ESP_OK) out[0] = 0;
-    return err == ESP_OK && out[0];
+    for (size_t i = 0; i < SECRET_COUNT; i++) {
+        if (strcmp(secrets[i].key, key) == 0) return (int)i;
+    }
+    return -1;
 }
 
-void net_secret_set(const char *key, const char *value)
+size_t net_secret_max(const char *key)
 {
+    int s = secret_slot(key);
+    return s < 0 ? 0 : secrets[s].cap - 1u;
+}
+
+/* Reads one value from flash into the cache. A value too long for its
+ * buffer (saved by an older firmware) counts as not set. */
+static void secret_load(int s)
+{
+    char tmp[200];
+    size_t len = secrets[s].cap;
     nvs_handle_t h;
-    if (nvs_open("secrets", NVS_READWRITE, &h) != ESP_OK) return;
-    if (value && value[0]) nvs_set_str(h, key, value);
-    else nvs_erase_key(h, key);
-    nvs_commit(h);
+    esp_err_t err = nvs_open("secrets", NVS_READONLY, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        tmp[0] = 0; /* nothing was ever saved */
+    } else if (err != ESP_OK) {
+        return; /* try again on the next read */
+    } else {
+        err = nvs_get_str(h, secrets[s].key, tmp, &len);
+        nvs_close(h);
+        if (err != ESP_OK) tmp[0] = 0;
+    }
+    portENTER_CRITICAL(&secret_mux);
+    if (!secrets[s].loaded) {
+        strlcpy(secrets[s].val, tmp, secrets[s].cap);
+        secrets[s].loaded = true;
+    }
+    portEXIT_CRITICAL(&secret_mux);
+    memset(tmp, 0, sizeof(tmp));
+}
+
+static void secrets_preload(void)
+{
+    for (size_t i = 0; i < SECRET_COUNT; i++) secret_load((int)i);
+}
+
+bool net_secret_get(const char *key, char *out, size_t len)
+{
+    out[0] = 0;
+    int s = secret_slot(key);
+    if (s < 0) return false;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        bool loaded;
+        portENTER_CRITICAL(&secret_mux);
+        loaded = secrets[s].loaded;
+        size_t n = loaded ? strlen(secrets[s].val) : 0;
+        if (loaded && n < len) memcpy(out, secrets[s].val, n + 1);
+        portEXIT_CRITICAL(&secret_mux);
+        if (loaded) return out[0] != 0;
+        secret_load(s);
+    }
+    return false;
+}
+
+bool net_secret_set(const char *key, const char *value)
+{
+    int s = secret_slot(key);
+    if (s < 0) return false;
+    bool has = value && value[0];
+    if (has && strlen(value) >= secrets[s].cap) return false;
+    nvs_handle_t h;
+    if (nvs_open("secrets", NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t err = has ? nvs_set_str(h, key, value) : nvs_erase_key(h, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK; /* erasing what was never there */
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "could not save %s: %s", key, esp_err_to_name(err));
+        return false;
+    }
+    portENTER_CRITICAL(&secret_mux);
+    strlcpy(secrets[s].val, has ? value : "", secrets[s].cap);
+    secrets[s].loaded = true;
+    portEXIT_CRITICAL(&secret_mux);
+    return true;
 }
 
 /* ------------------------------------------------------------ UI updates */
@@ -79,7 +169,7 @@ static void publish(void)
     strlcpy(w->setup_pass, setup_pass, sizeof(w->setup_pass));
     w->joining = joining;
     w->failed = failed;
-    ui_post(wifi_apply, w);
+    if (!ui_post(wifi_apply, w)) free(w);
 }
 
 bool net_online(void)
@@ -298,8 +388,18 @@ static void setup_begin(void *arg)
         wifi_config_t ap = {.ap = {.ssid = SETUP_SSID, .ssid_len = strlen(SETUP_SSID), .channel = 1,
                                    .max_connection = 2, .authmode = WIFI_AUTH_WPA2_PSK}};
         strlcpy((char *)ap.ap.password, setup_pass, sizeof(ap.ap.password));
-        esp_wifi_set_mode(WIFI_MODE_APSTA);
-        esp_wifi_set_config(WIFI_IF_AP, &ap);
+        esp_err_t ap_err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (ap_err == ESP_OK) ap_err = esp_wifi_set_config(WIFI_IF_AP, &ap);
+        memset(ap.ap.password, 0, sizeof(ap.ap.password));
+        if (ap_err != ESP_OK) {
+            /* Without the password the hotspot would come up open, so do not start it. */
+            ESP_LOGE(TAG, "hotspot config rejected: %s", esp_err_to_name(ap_err));
+            setup_mode = false;
+            setup_pass[0] = 0;
+            apply_mode();
+            publish();
+            return;
+        }
         if (!wifi_up) {
             esp_wifi_start();
             esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
@@ -371,7 +471,7 @@ static void scan_task(void *arg)
         }
     }
     free(aps);
-    if (r) ui_post(scan_apply, r);
+    if (r && !ui_post(scan_apply, r)) free(r);
     vTaskDelete(NULL);
 }
 
@@ -434,6 +534,7 @@ static void ntp_timeout_cb(void *arg)
 
 void net_init(void)
 {
+    secrets_preload();
     events = xEventGroupCreate();
     esp_netif_create_default_wifi_sta();
     esp_netif_create_default_wifi_ap();

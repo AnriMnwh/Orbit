@@ -55,6 +55,8 @@ static struct {
     double lat, lon;
     volatile int next, total, done;
 } job;
+/* Guards job.lat/job.lon, which two tasks touch and a double is not one store. */
+static portMUX_TYPE job_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static bool same(tkey_t a, tkey_t b)
 {
@@ -137,8 +139,10 @@ static char *fetch(tkey_t k, size_t *len, bool *downloaded)
     make_room();
     f = fopen(path, "wb");
     if (f) {
-        fwrite(r.data, 1, r.len, f);
-        fclose(f);
+        /* A short write would leave a PNG-looking stub that is never repaired. */
+        bool wrote = fwrite(r.data, 1, r.len, f) == r.len;
+        wrote = fclose(f) == 0 && wrote;
+        if (!wrote) unlink(path);
     }
     *len = r.len;
     *downloaded = true;
@@ -209,14 +213,19 @@ static void deliver(void *arg)
 /* The n-th tile of the offline job: zooms 12..16 around the chosen point. */
 static bool job_tile(int n, tkey_t *out)
 {
+    /* tiles_preload() may move the target while this runs, so read it once. */
+    double lat, lon;
+    portENTER_CRITICAL(&job_mux);
+    lat = job.lat, lon = job.lon;
+    portEXIT_CRITICAL(&job_mux);
     for (int z = 12; z <= 16; z++) {
         int radius = z >= 14 ? 2 : 1, side = 2 * radius + 1;
         if (n >= side * side) {
             n -= side * side;
             continue;
         }
-        double scale = (double)(1 << z), rad = job.lat * 3.14159265358979 / 180.0;
-        int cx = (int)((job.lon + 180.0) / 360.0 * scale);
+        double scale = (double)(1 << z), rad = lat * 3.14159265358979 / 180.0;
+        int cx = (int)((lon + 180.0) / 360.0 * scale);
         int cy = (int)((1.0 - log(tan(rad) + 1.0 / cos(rad)) / 3.14159265358979) / 2.0 * scale);
         int span = 1 << z;
         out->z = z;
@@ -240,7 +249,10 @@ static void worker(void *arg)
             if (r) {
                 r->k = k;
                 r->px = png ? decode(png, len) : NULL;
-                ui_post(deliver, r);
+                if (!ui_post(deliver, r)) {
+                    free(r->px);
+                    free(r);
+                }
             }
             free(png);
         } else if (job.next < job.total) {
@@ -293,7 +305,9 @@ const lv_image_dsc_t *svc_tile(int z, int x, int y)
 
 int tiles_preload(double lat, double lon)
 {
+    portENTER_CRITICAL(&job_mux);
     job.lat = lat, job.lon = lon;
+    portEXIT_CRITICAL(&job_mux);
     job.next = 0, job.done = 0;
     job.total = 9 + 9 + 25 + 25 + 25;
     net_acquire(NET_NEED_TILES);

@@ -7,7 +7,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
-#include "esp_log.h"
 
 #include "http.h"
 
@@ -55,17 +54,15 @@ int http_request(const http_request_t *q, http_reply_t *reply)
     };
     if (strncmp(q->url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
+    char auth[8 + 200]; /* "Bearer " plus the longest key the setup page accepts */
+    if (q->bearer && strlen(q->bearer) + 8 > sizeof(auth)) return -1;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     if (q->bearer) {
-        size_t n = strlen(q->bearer) + 8;
-        char *h = malloc(n);
-        if (h) {
-            snprintf(h, n, "Bearer %s", q->bearer);
-            esp_http_client_set_header(c, "Authorization", h);
-            memset(h, 0, n);
-            free(h);
-        }
+        memcpy(auth, "Bearer ", 7);
+        memcpy(auth + 7, q->bearer, strlen(q->bearer) + 1);
+        esp_http_client_set_header(c, "Authorization", auth);
+        memset(auth, 0, sizeof(auth));
     }
     if (q->content_type) esp_http_client_set_header(c, "Content-Type", q->content_type);
     if (q->body) esp_http_client_set_post_field(c, q->body, (int)q->body_len);

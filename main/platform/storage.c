@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "esp_heap_caps.h"
 #include "esp_jpeg_common.h"
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
@@ -22,9 +23,11 @@ static const char *TAG = "storage";
 
 static wl_handle_t wl = WL_INVALID_HANDLE;
 static bool mounted;
+static SemaphoreHandle_t lock; /* guards the photo list below */
 
 void storage_init(void)
 {
+    lock = xSemaphoreCreateMutex();
     esp_vfs_fat_mount_config_t cfg = {
         .format_if_mount_failed = true,
         .max_files = 6,
@@ -74,10 +77,10 @@ void svc_clear(int what)
 /* ----------------------------------------------------------------- photos */
 
 /* File names, sorted, guarded by a mutex because the web server lists them
- * from its own task while the UI reads them from the LVGL task. */
+ * from its own task while the UI reads them from the LVGL task. The mutex is
+ * created in storage_init(), before either task can ask. */
 static char names[PHOTO_MAX][24];
 static int count = -1; /* -1: not scanned yet */
-static SemaphoreHandle_t lock;
 
 static uint16_t *pixels; /* one decoded photo, 466 x 466 RGB565 */
 static lv_image_dsc_t dsc;
@@ -105,7 +108,7 @@ static void scan(void)
 
 static void take(void)
 {
-    if (!lock) lock = xSemaphoreCreateMutex();
+    /* the mutex is created in storage_init(), before any task can reach this */
     xSemaphoreTake(lock, portMAX_DELAY);
     if (count < 0) scan();
 }
@@ -172,6 +175,28 @@ static bool jpeg_fits(const uint8_t *jpg, size_t len, int w, int h)
     jpeg_dec_header_info_t info;
     bool ok = jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK && info.width == w && info.height == h;
     jpeg_dec_close(dec);
+    return ok;
+}
+
+/* The same check for a photo already written to flash (the browser upload
+ * streams to a file). The file is read into external RAM, so a 400 KB photo
+ * does not touch the scarce internal heap. */
+bool photo_file_fits(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    bool ok = false;
+    if (size >= 200 && size <= JPEG_MAX_BYTES) {
+        uint8_t *buf = heap_caps_malloc((size_t)size, MALLOC_CAP_SPIRAM);
+        if (buf) {
+            ok = fread(buf, 1, (size_t)size, f) == (size_t)size && jpeg_fits(buf, (size_t)size, SCR, SCR);
+            free(buf);
+        }
+    }
+    fclose(f);
     return ok;
 }
 

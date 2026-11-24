@@ -16,8 +16,9 @@
 #define TILE_DIR DATA_DIR "/tiles"
 
 /* Runs fn(arg) on the LVGL thread. Every other task must go through this
- * before touching `S`, `CFG` or any LVGL object. */
-void ui_post(void (*fn)(void *arg), void *arg);
+ * before touching `S`, `CFG` or any LVGL object. Returns false when the UI
+ * could not take the call: fn never runs, so the caller still owns arg. */
+bool ui_post(void (*fn)(void *arg), void *arg);
 
 /* --- board.c --- */
 void clock_set(time_t utc, int tz_minutes, bool tz_known);
@@ -31,6 +32,8 @@ bool photos_new_path(char *path, size_t len, char name[24]); /* false when full 
 /* Stores a 466 x 466 JPEG; NULL, or a one-word reason. Writes flash. */
 const char *photo_add(const uint8_t *jpg, size_t len, char name[24]);
 bool photo_remove(const char *name);
+/* True if the JPEG file at this path is one the watch can show (466 x 466). */
+bool photo_file_fits(const char *path);
 
 /* --- audio.c --- */
 void audio_init(void);
@@ -55,13 +58,15 @@ bool net_online(void);
 bool net_join_camera(const char *ssid, const char *password);
 void net_leave_camera(void);
 bool net_secret_get(const char *key, char *out, size_t len);
-void net_secret_set(const char *key, const char *value);
+/* Saves (or, for "", erases) a setup-page value; false if flash refused it or it is too long. */
+bool net_secret_set(const char *key, const char *value);
+/* Longest value the setup page may store for this key (0 if unknown). */
+size_t net_secret_max(const char *key);
 void net_rejoin(void); /* after the saved home network changed */
 
 /* --- web.c --- */
 void web_enable(bool on);
 const char *web_pin_get(void);
-bool web_is_active(void);
 bool web_update_window_open(void);
 
 /* --- ble*.c --- */
@@ -87,6 +92,9 @@ void ble_tx_bulk(const uint8_t *frame, size_t len, bool wait);
 int ble_payload(void);         /* largest frame the link carries right now */
 void ble_request_pairing(void);
 void ble_set_app(bool on);     /* the Orbit phone app said hello */
+/* The battery reading changed (LVGL thread). Bluetooth's task keeps its own copy, because it may not read `S`. */
+void ble_battery(int percent, bool charging);
+void ble_battery_get(int *percent, bool *charging);
 
 /* --- link.c: what the Orbit phone app adds on top of Gadgetbridge --- */
 struct cJSON;

@@ -42,15 +42,16 @@ static bool have_imu;
 
 /* ------------------------------------------------------------- UI thread */
 
-void ui_post(void (*fn)(void *arg), void *arg)
+bool ui_post(void (*fn)(void *arg), void *arg)
 {
     if (bsp_display_lock(3000) != ESP_OK) {
         ESP_LOGW(TAG, "UI busy, dropped an update");
-        return;
+        return false;
     }
-    lv_async_call(fn, arg);
+    bool queued = lv_async_call(fn, arg) == LV_RESULT_OK;
     bsp_display_unlock();
-    esp_lv_adapter_request_wake();
+    if (queued) esp_lv_adapter_request_wake();
+    return queued;
 }
 
 /* -------------------------------------------------------------------- I2C */
@@ -144,7 +145,7 @@ void clock_set(time_t utc, int tz_minutes, bool tz_known)
     clock_msg_t *m = malloc(sizeof(*m));
     if (!m) return;
     *m = (clock_msg_t){tz_minutes, tz_known};
-    ui_post(clock_apply, m);
+    if (!ui_post(clock_apply, m)) free(m);
 }
 
 void svc_set_time(time_t utc)
@@ -282,6 +283,7 @@ static void battery_apply(void *arg)
     bool changed = memcmp(&S.batt, b, sizeof(*b)) != 0;
     bool plugged_in = b->plugged && !S.batt.plugged;
     S.batt = *b;
+    ble_battery(S.batt.percent, S.batt.charging);
     free(b);
     if (plugged_in) shell_wake();
     if (changed) bus_emit(EVT_BATTERY, NULL);
@@ -303,7 +305,7 @@ static void battery_read(void)
     b->plugged = s1 & 0x20;
     b->charging = ((s2 >> 5) & 0x07) == 0x01;
     b->percent = percent;
-    ui_post(battery_apply, b);
+    if (!ui_post(battery_apply, b)) free(b);
 }
 
 static void button_apply(void *arg)
@@ -362,15 +364,6 @@ static void imu_init(void)
     ESP_LOGI(TAG, "motion sensor found at 0x%02x", addr);
 }
 
-/* Latest gravity reading in g, for the Level and Synth apps. Which way x and
- * y point relative to the screen has to be checked on the real watch. */
-static volatile float tilt[3] = {0, 0, 1};
-
-void svc_tilt(float *x, float *y, float *z)
-{
-    *x = tilt[0], *y = tilt[1], *z = tilt[2];
-}
-
 static void raise_apply(void *arg)
 {
     LV_UNUSED(arg);
@@ -394,7 +387,6 @@ static void imu_poll(void)
     if (qmi8658_read_accel(&imu, &x, &y, &z) != ESP_OK) return; /* in mg, set in imu_init */
     float mag = sqrtf(x * x + y * y + z * z);
     if (mag < 1) return;
-    tilt[0] = x / 1000.0f, tilt[1] = y / 1000.0f, tilt[2] = z / 1000.0f;
     uint32_t now = svc_millis();
 
     /* Steps: count swings of the total force above its running average. */
@@ -486,7 +478,7 @@ static void display_rounder_cb(lv_event_t *e)
     area->y2 = ((area->y2 >> 1) << 1) + 1;
 }
 
-/* Starts display + touch with an internal DMA draw buffer (20 lines = 18.6 KB)
+/* Starts display + touch with internal DMA draw buffers (two 24-line, 44.7 KB in all)
  * instead of Waveshare's 50-line PSRAM buffer, which forced spi_master to
  * allocate a 46.6 KB internal DMA bounce buffer on every flush (OOM with Wi-Fi + BLE). */
 static bool display_start(void)

@@ -48,7 +48,7 @@ static void publish(cam_status_t status, const char *note)
     cam_t *c = malloc(sizeof(*c));
     if (!c) return;
     *c = state;
-    ui_post(cam_apply, c);
+    if (!ui_post(cam_apply, c)) free(c);
 }
 
 /* ------------------------------------------------------------------- HTTP */
@@ -197,13 +197,13 @@ void svc_camera_link(bool on)
     static bool started;
     if (on && jobs && !started) started = xTaskCreate(task, "lumix", 6144, NULL, 4, NULL) == pdPASS;
     int job = on ? JOB_LINK : JOB_UNLINK;
-    if (jobs && started) xQueueSend(jobs, &job, 0);
+    if (jobs && started && xQueueSend(jobs, &job, pdMS_TO_TICKS(50)) != pdTRUE) ESP_LOGW(TAG, "camera busy, dropped link request");
 }
 
 void svc_camera(cam_cmd_t cmd)
 {
     int job = cmd;
-    if (jobs) xQueueSend(jobs, &job, 0);
+    if (jobs && xQueueSend(jobs, &job, pdMS_TO_TICKS(50)) != pdTRUE) ESP_LOGW(TAG, "camera busy, dropped command %d", job);
 }
 
 void lumix_init(void)

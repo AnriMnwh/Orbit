@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "cJSON.h"
@@ -40,6 +39,16 @@ extern const char index_html_end[] asm("_binary_index_html_end");
 
 /* ---------------------------------------------------------------- helpers */
 
+/* A client that goes quiet mid-upload must not hold the one httpd task for
+ * ever: after this many receive timeouts in a row the request is given up. */
+#define MAX_RECV_TIMEOUTS 4
+
+static void wipe_string(cJSON *obj, const char *key)
+{
+    cJSON *v = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsString(v) && v->valuestring) memset(v->valuestring, 0, strlen(v->valuestring));
+}
+
 static char *read_body(httpd_req_t *req, size_t max, size_t *len)
 {
     size_t total = req->content_len;
@@ -47,14 +56,16 @@ static char *read_body(httpd_req_t *req, size_t max, size_t *len)
     char *buf = malloc(total + 1);
     if (!buf) return NULL;
     size_t got = 0;
+    int timeouts = 0;
     while (got < total) {
         int n = httpd_req_recv(req, buf + got, total - got);
-        if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts <= MAX_RECV_TIMEOUTS) continue;
         if (n <= 0) {
             free(buf);
             return NULL;
         }
         got += (size_t)n;
+        timeouts = 0;
     }
     buf[total] = 0;
     if (len) *len = total;
@@ -135,7 +146,13 @@ static bool check_request(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Invalid host");
         return false;
     }
-    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) == ESP_OK && origin[0]) {
+    esp_err_t oerr = httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin));
+    if (oerr == ESP_ERR_HTTPD_RESULT_TRUNC) {
+        /* Too long to be any of our names, and not to be mistaken for "no Origin". */
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Origin rejected");
+        return false;
+    }
+    if (oerr == ESP_OK && origin[0]) {
         const char *oh = strstr(origin, "://");
         oh = oh ? oh + 3 : origin;
         char ohost[64];
@@ -194,15 +211,21 @@ static esp_err_t h_index(httpd_req_t *req)
 static esp_err_t h_fallback(httpd_req_t *req, httpd_err_code_t err)
 {
     LV_UNUSED(err);
+    /* Back to whichever address the client used (the hotspot, or the watch's
+     * place on the home network), as long as it is one of ours. */
+    char host[64] = "", loc[80] = "http://192.168.4.1/";
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK && host_allowed(host)) {
+        snprintf(loc, sizeof(loc), "http://%s/", host);
+    }
     httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_set_hdr(req, "Location", loc);
     return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t h_status(httpd_req_t *req)
 {
     if (!check_request(req)) return ESP_OK;
-    char tmp[64];
+    char tmp[200];
     uint32_t total = 0, free_kb = 0;
     int done = 0, queued = 0;
     svc_storage_info(&total, &free_kb);
@@ -220,6 +243,7 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON_AddNumberToObject(r, "storage_total_kb", total);
     cJSON_AddNumberToObject(r, "storage_free_kb", free_kb);
     cJSON_AddBoolToObject(r, "time_valid", svc_time_valid());
+    /* The key is only tested for, never sent: the buffer fits the longest key the page accepts. */
     cJSON_AddBoolToObject(r, "has_ai_key", net_secret_get("ai_key", tmp, sizeof(tmp)));
     memset(tmp, 0, sizeof(tmp));
     cJSON_AddBoolToObject(r, "has_camera", net_secret_get("cam_ssid", tmp, sizeof(tmp)));
@@ -279,10 +303,13 @@ static esp_err_t h_wifi(httpd_req_t *req)
         cJSON_Delete(j);
         return fail(req, "ssid required");
     }
-    net_secret_set("wifi_ssid", ssid);
-    net_secret_set("wifi_pass", pass ? pass : "");
+    bool saved = net_secret_set("wifi_ssid", ssid) && net_secret_set("wifi_pass", pass ? pass : "");
+    wipe_string(j, "pass");
     cJSON_Delete(j);
-    xTaskCreate(rejoin_task, "rejoin", 4096, NULL, 4, NULL);
+    if (!saved) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not save");
+    if (xTaskCreate(rejoin_task, "rejoin", 4096, NULL, 4, NULL) != pdPASS) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "saved, but could not join: restart the watch");
+    }
     return send_ok(req);
 }
 
@@ -356,11 +383,13 @@ static esp_err_t h_photo_add(httpd_req_t *req)
     size_t left = req->content_len;
     bool ok = buf != NULL;
     bool first = true;
+    int timeouts = 0;
     while (ok && left > 0) {
         int got = httpd_req_recv(req, buf, left < 4096 ? left : 4096);
-        if (got == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts <= MAX_RECV_TIMEOUTS) continue;
         if (got <= 0) ok = false;
         else {
+            timeouts = 0;
             /* Must be a JPEG: starts with FF D8. */
             if (first && (got < 2 || (uint8_t)buf[0] != 0xFF || (uint8_t)buf[1] != 0xD8)) ok = false;
             first = false;
@@ -369,10 +398,13 @@ static esp_err_t h_photo_add(httpd_req_t *req)
         }
     }
     free(buf);
-    fclose(f);
+    ok = fclose(f) == 0 && ok;
+    /* The same gate the Bluetooth upload uses: only 466 x 466 baseline JPEGs
+     * can be shown, so anything else would just fill the flash. */
+    if (ok && !photo_file_fits(path)) ok = false;
     if (!ok) {
         unlink(path);
-        return fail(req, "upload failed");
+        return fail(req, "upload failed: photos must be 466 x 466 JPEG files");
     }
     photos_changed();
     return send_ok(req);
@@ -388,7 +420,7 @@ static esp_err_t h_photo_delete(httpd_req_t *req)
     }
     char path[64];
     snprintf(path, sizeof(path), PHOTO_DIR "/%s", name);
-    unlink(path);
+    if (unlink(path) != 0) return httpd_resp_send_404(req);
     photos_changed();
     return send_ok(req);
 }
@@ -453,7 +485,7 @@ static esp_err_t h_macro_set(httpd_req_t *req)
         next[i].usage = (uint16_t)num_of(o, "usage");
     }
     cJSON_Delete(j);
-    ui_post(macros_apply, next);
+    if (!ui_post(macros_apply, next)) free(next);
     return send_ok(req);
 }
 
@@ -528,7 +560,7 @@ static esp_err_t h_faces_set(httpd_req_t *req)
         if (bg && bg[0] == '#') m->items[i].bg_hex = (uint32_t)strtoul(bg + 1, NULL, 16) & 0xFFFFFF;
     }
     cJSON_Delete(j);
-    ui_post(faces_apply, m);
+    if (!ui_post(faces_apply, m)) free(m);
     return send_ok(req);
 }
 
@@ -549,11 +581,23 @@ static esp_err_t h_secrets(httpd_req_t *req)
         cJSON_Delete(j);
         return fail(req, "expected an object");
     }
+    /* Check every value against the buffer the code that reads it uses before
+     * saving any, so a value that is too long is refused instead of being
+     * stored and then silently ignored. */
+    bool ok = true;
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         const char *v = str_of(j, keys[i]);
-        if (v && strlen(v) < 240) net_secret_set(keys[i], v);
+        if (v && strlen(v) > net_secret_max(keys[i])) ok = false;
     }
+    bool saved = ok;
+    for (size_t i = 0; ok && i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const char *v = str_of(j, keys[i]);
+        if (v && !net_secret_set(keys[i], v)) saved = false;
+    }
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) wipe_string(j, keys[i]);
     cJSON_Delete(j);
+    if (!ok) return fail(req, "a value is too long");
+    if (!saved) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not save");
     return send_ok(req);
 }
 
@@ -622,11 +666,12 @@ static esp_err_t h_update(httpd_req_t *req)
     char *buf = malloc(4096);
     size_t left = req->content_len;
     bool ok = buf != NULL;
+    int timeouts = 0;
     while (ok && left > 0) {
         int got = httpd_req_recv(req, buf, left < 4096 ? left : 4096);
-        if (got == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts <= MAX_RECV_TIMEOUTS) continue;
         if (got <= 0 || esp_ota_write(ota, buf, (size_t)got) != ESP_OK) ok = false;
-        else left -= (size_t)got;
+        else left -= (size_t)got, timeouts = 0;
     }
     free(buf);
     /* esp_ota_end() checks the image is complete and intact before we switch. */
@@ -636,7 +681,9 @@ static esp_err_t h_update(httpd_req_t *req)
 
     update_until = 0;
     ESP_LOGI(TAG, "update installed, restarting");
-    xTaskCreate(restart_task, "restart", 2048, NULL, 4, NULL);
+    if (xTaskCreate(restart_task, "restart", 2048, NULL, 4, NULL) != pdPASS) {
+        return fail(req, "installed, but the watch could not restart: restart it by hand");
+    }
     return send_ok(req);
 }
 
@@ -662,7 +709,7 @@ static void web_publish(void)
     if (!w) return;
     w->active = server != NULL;
     strlcpy(w->pin, server ? web_pin : "", sizeof(w->pin));
-    ui_post(web_apply, w);
+    if (!ui_post(web_apply, w)) free(w);
 }
 
 static void idle_cb(void *arg)
@@ -674,11 +721,6 @@ static void idle_cb(void *arg)
 const char *web_pin_get(void)
 {
     return web_pin;
-}
-
-bool web_is_active(void)
-{
-    return server != NULL;
 }
 
 void web_enable(bool on)
@@ -711,6 +753,8 @@ void web_enable(bool on)
     if (httpd_start(&server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "setup page did not start");
         server = NULL;
+        web_pin[0] = 0;
+        net_release(NET_NEED_SETUP); /* nothing is listening, so do not keep the radio on for it */
         web_publish();
         return;
     }
