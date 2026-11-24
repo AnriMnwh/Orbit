@@ -30,7 +30,7 @@ Orbit brings a smooth, Material You–styled Wear OS interface to the round 466�
   - **Android (Gadgetbridge)**: Works out of the box as a *Bangle.js* device.
   - **iPhone**: Native ANCS/AMS/CTS support — notifications, calls, media controls, and clock sync with no app required.
   - **Bluetooth HID & MIDI**: Switch into a wireless macro pad (*Orbit Keys*), presentation remote, or BLE MIDI instrument (*Orbit MIDI*).
-- **Smooth Hardware Performance**: Internal DMA double buffering (2 × 24 lines) pinned to Core 1 with LVGL objects in 8 MB PSRAM, keeping Core 0 dedicated to Wi-Fi and BLE.
+- **Smooth Hardware Performance**: Internal DMA double buffering (2 × 28 lines) pinned to Core 1 with LVGL objects in 8 MB PSRAM, keeping Core 0 dedicated to Wi-Fi and BLE. Only the visible circle is drawn and sent, in the panel's own byte order. Each frame starts on the panel's tearing-effect pulse (it scans at ~60 Hz), so motion runs at an even 30 fps without tearing; tile swipes slide pre-rendered pictures of the tiles to keep that pace (the pictures, up to about 2.2 MB of PSRAM, are freed whenever the screen rests).
 
 ## Getting Around
 

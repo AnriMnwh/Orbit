@@ -24,6 +24,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #undef M_PI /* qmi8658.h defines it again, unguarded; same value */
@@ -432,9 +433,49 @@ static void imu_poll(void)
 
 static volatile bool display_active = true;
 
+/* ---- frames start on the panel's scan ----
+ * The panel scans its memory top to bottom about 60 times a second and pulses
+ * LCD_TE (GPIO 13) as a scan begins. A full frame takes about 30 ms to draw and
+ * send, longer than one scan, so a frame sent at an arbitrary moment is caught
+ * by a scan half old and half new: a tear. Each frame therefore starts on a
+ * pulse. The scan beginning then outruns the transfer and still shows the
+ * whole old frame; the next scan trails it and shows the whole new one. That
+ * holds while a frame takes under two scans, so frames come at most every
+ * second scan (30 a second, evenly spaced). Small updates, like the seconds
+ * hand, wait at most one scan. */
+#define LCD_TE_GPIO GPIO_NUM_13
+#define TE_FRESH_US 2000  /* a pulse this recent still counts as now */
+#define TE_WAIT_MAX_MS 40 /* no pulse (panel off, signal missing): draw anyway */
+
+static SemaphoreHandle_t te_pulse;
+static volatile int64_t te_last_us, te_since_us;
+static volatile uint32_t te_count;
+
+static void IRAM_ATTR te_isr(void *arg)
+{
+    te_last_us = esp_timer_get_time();
+    te_count++;
+    BaseType_t woke = pdFALSE;
+    xSemaphoreGiveFromISR(te_pulse, &woke);
+    if (woke) portYIELD_FROM_ISR();
+}
+
+static void te_wait(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (!display_active) return;
+    xSemaphoreTake(te_pulse, 0); /* a pulse from before this frame was asked for */
+    if (esp_timer_get_time() - te_last_us < TE_FRESH_US) return;
+    xSemaphoreTake(te_pulse, pdMS_TO_TICKS(TE_WAIT_MAX_MS));
+}
+
 void svc_display_active(bool active)
 {
     display_active = active;
+    /* Resting, nothing needs the pulses: 60 interrupts a second less. */
+    if (!te_pulse) return;
+    if (active) gpio_intr_enable(LCD_TE_GPIO);
+    else gpio_intr_disable(LCD_TE_GPIO);
 }
 
 static void inputs_task(void *arg)
@@ -575,6 +616,26 @@ static bool display_start(void)
     if (bsp_touch_new(&cfg, &tp) != ESP_OK || !tp) return false;
     const esp_lv_adapter_touch_config_t touch_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, tp);
     if (!esp_lv_adapter_register_touch(&touch_cfg)) return false;
+
+    /* The panel's TE output (enabled by the BSP's init commands) on GPIO 13. */
+    te_pulse = xSemaphoreCreateBinary();
+    const gpio_config_t te = {.pin_bit_mask = 1ULL << LCD_TE_GPIO, .mode = GPIO_MODE_INPUT, .intr_type = GPIO_INTR_POSEDGE};
+    esp_err_t added = ESP_FAIL;
+    if (te_pulse && gpio_config(&te) == ESP_OK) {
+        /* The touch driver, set up just above, has started the GPIO interrupt
+         * service; installing it a second time would log an error. */
+        added = gpio_isr_handler_add(LCD_TE_GPIO, te_isr, NULL);
+        if (added == ESP_ERR_INVALID_STATE && gpio_install_isr_service(0) == ESP_OK)
+            added = gpio_isr_handler_add(LCD_TE_GPIO, te_isr, NULL);
+    }
+    if (added == ESP_OK) {
+        te_since_us = esp_timer_get_time();
+        lv_display_add_event_cb(disp, te_wait, LV_EVENT_RENDER_START, NULL);
+    } else if (te_pulse) {
+        vSemaphoreDelete(te_pulse);
+        te_pulse = NULL;
+        ESP_LOGW(TAG, "panel TE signal unavailable: frames are not paced to its scan");
+    }
 
     bsp_display_brightness_init();
     return esp_lv_adapter_start() == ESP_OK;
@@ -737,4 +798,9 @@ void app_main(void)
     svc_memory_info(&internal_kb, &external_kb);
     ESP_LOGI(TAG, "Orbit %s ready. Free memory: %u KB internal, %u KB external", ORBIT_VERSION, (unsigned)internal_kb,
              (unsigned)external_kb);
+    if (te_pulse) {
+        int64_t us = esp_timer_get_time() - te_since_us;
+        if (te_count) ESP_LOGI(TAG, "panel scans at %.1f Hz; frames start on its TE pulse", te_count * 1e6 / (double)us);
+        else ESP_LOGW(TAG, "no TE pulses from the panel yet: frames are not paced to its scan");
+    }
 }
