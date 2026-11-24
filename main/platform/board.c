@@ -37,6 +37,10 @@ static const char *TAG = "board";
 
 #define SIDE_BUTTON GPIO_NUM_0 /* the BOOT key */
 #define AXP2101_ADDR 0x34
+/* Fitted on the ESP32-S3-Touch-AMOLED-1.75, not on the 1.75C (see its
+ * schematic). Without it the time still survives restarts and updates (the
+ * chip's own RTC timer keeps it) but not a power-off; the phone or Wi-Fi then
+ * sets it again. */
 #define PCF85063_ADDR 0x51
 #define TIME_VALID_AFTER 1750000000 /* any real time is later than mid-2025 */
 
@@ -60,11 +64,14 @@ bool ui_post(void (*fn)(void *arg), void *arg)
 
 /* -------------------------------------------------------------------- I2C */
 
-static i2c_master_dev_handle_t i2c_attach(uint8_t addr, const char *name)
+/* `optional`: a part only some versions of the board have, so its absence is
+ * expected rather than a fault. */
+static i2c_master_dev_handle_t i2c_attach(uint8_t addr, const char *name, bool optional)
 {
     i2c_master_bus_handle_t bus = bsp_i2c_get_handle();
     if (i2c_master_probe(bus, addr, 50) != ESP_OK) {
-        ESP_LOGW(TAG, "%s not found at 0x%02x", name, addr);
+        if (optional) ESP_LOGI(TAG, "no %s on this board", name);
+        else ESP_LOGW(TAG, "%s not found at 0x%02x", name, addr);
         return NULL;
     }
     i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = 400000};
@@ -326,7 +333,7 @@ static void button_post(int button, int press)
 
 static void pmic_init(void)
 {
-    pmic = i2c_attach(AXP2101_ADDR, "power chip (AXP2101)");
+    pmic = i2c_attach(AXP2101_ADDR, "power chip (AXP2101)", false);
     if (!pmic) return;
     /* Only status and interrupt flags are touched. Voltage rails and charge
      * settings stay exactly as the board ships. */
@@ -659,7 +666,7 @@ void app_main(void)
     bsp_display_unlock();
 
     pmic_init();
-    rtc = i2c_attach(PCF85063_ADDR, "clock chip (PCF85063)");
+    rtc = i2c_attach(PCF85063_ADDR, "clock chip (PCF85063)", true);
     rtc_load();
     imu_init();
 

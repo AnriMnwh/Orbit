@@ -122,6 +122,7 @@ Compiles `main/core`, `main/ui`, and `main/apps` natively with LVGL against mock
 
 - **Verified on hardware**: CO5300 QSPI AMOLED display (466×466), CST9217 touch, AXP2101 PMIC (battery, power button, 80% charge limit), QMI8658 IMU, ES8311 speaker + ES7210 dual mics, Wi-Fi, mDNS (`orbit.local`), BLE NimBLE advertising, and internal DMA double buffering (~46 KB free internal RAM + ~8 MB free PSRAM at boot).
 - **Power**: CPU frequency scaling (80–240 MHz) and display rest/AoD are active; deep/light sleep with radio wake is planned for a future release.
+- **Clock**: The 1.75C has no battery-backed clock chip (the non-C 1.75 has a PCF85063, which the firmware uses if present). The time survives restarts and updates, but after a full power-off or flat battery it is set again by the phone (on connect) or by Wi-Fi.
 - **Haptics**: The Waveshare 1.75C board has no vibration motor, so alerts use the onboard speaker.
 - **Security**: Every Bluetooth peer (Orbit app, Gadgetbridge, iPhone, or a computer using Orbit Keys) must pair with LE Secure Connections and a six-digit number confirmed on the watch before it can read, write or subscribe to anything beyond Device Information and Battery. The watch web server enforces same-origin checks on state-changing API endpoints, sets strict CSP/security headers, zeroes secret buffers after use, and gates OTA behind a 5-minute physical approval window.
 
