@@ -51,7 +51,10 @@ CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_OS_FREERTOS=y
 CONFIG_LV_DEF_REFR_PERIOD=16
 CONFIG_LV_OBJ_STYLE_CACHE=y
-CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# One render thread, not two: measured on the watch it is 9-16% faster on
+# every screen (the UI is many small draw tasks, and handing each to a second
+# thread cost more than it saved), and it leaves Core 0 to Wi-Fi and Bluetooth.
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
 # Not CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM: with Wi-Fi and Bluetooth both in
 # the build, LVGL's hot code no longer fits in the chip's fast internal RAM
 # (the link fails), and that RAM is better spent on the radio stacks anyway.

@@ -506,9 +506,12 @@ static bool display_start(void)
     cfg.lv_adapter_cfg.task_min_delay_ms = 2;       /* responsive pacing while feeding IDLE1 WDT */
     if (esp_lv_adapter_init(&cfg.lv_adapter_cfg) != ESP_OK) return false;
 
-    /* Two 24-line internal DMA buffers (44.7 KB total) overlap CPU rendering
-     * on Core 1 with QSPI DMA transfer for near wire-speed (~45 fps) swipes. */
-    const int buf_lines = 24;
+    /* Two 28-line internal DMA buffers (52 KB total) overlap CPU rendering on
+     * Core 1 with the QSPI transfer. Each frame is drawn in 17 strips; fewer,
+     * taller strips render faster (7-12% over 24 lines), but internal RAM is
+     * what limits them. Buffers in external RAM are far slower: the SPI driver
+     * copies them into internal RAM first. */
+    const int buf_lines = 28;
     const bsp_display_config_t panel_cfg = {
         .max_transfer_sz = BSP_LCD_H_RES * BSP_LCD_V_RES * BSP_LCD_BITS_PER_PIXEL / 8,
     };

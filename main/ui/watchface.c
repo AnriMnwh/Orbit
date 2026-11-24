@@ -272,6 +272,30 @@ static void polar(float deg, float r, lv_point_precise_t *p)
     p->y = (lv_value_precise_t)(SCR_C + r * sinf(a));
 }
 
+/* The screen is drawn in ~20 horizontal strips per frame and the dial's
+ * draw callback runs once per strip. LVGL queues a draw task for every line
+ * it is handed, even one nowhere near the strip, and its task handling grows
+ * with the square of their number: handing over all 60 ticks every time cost
+ * about 57 ms a frame. So the dials only pass on what touches this strip. */
+static bool touches_strip(const lv_layer_t *layer, const lv_area_t *a)
+{
+    const lv_area_t *s = &layer->_clip_area;
+    return a->x1 <= s->x2 && a->x2 >= s->x1 && a->y1 <= s->y2 && a->y2 >= s->y1;
+}
+
+static void line_in_strip(lv_layer_t *layer, const lv_draw_line_dsc_t *d)
+{
+    /* The same bounds lv_draw_line() gives the task. */
+    lv_area_t a = {(int32_t)LV_MIN(d->p1.x, d->p2.x) - d->width, (int32_t)LV_MIN(d->p1.y, d->p2.y) - d->width,
+                   (int32_t)LV_MAX(d->p1.x, d->p2.x) + d->width, (int32_t)LV_MAX(d->p1.y, d->p2.y) + d->width};
+    if (touches_strip(layer, &a)) lv_draw_line(layer, d);
+}
+
+static void rect_in_strip(lv_layer_t *layer, const lv_draw_rect_dsc_t *d, const lv_area_t *a)
+{
+    if (touches_strip(layer, a)) lv_draw_rect(layer, d, a);
+}
+
 static void stroke(lv_layer_t *layer, const lv_area_t *origin, float deg, float r0, float r1, int width, lv_color_t c)
 {
     lv_draw_line_dsc_t d;
@@ -284,12 +308,85 @@ static void stroke(lv_layer_t *layer, const lv_area_t *origin, float deg, float 
     polar(deg, r1, &d.p2);
     d.p1.x += origin->x1, d.p1.y += origin->y1;
     d.p2.x += origin->x1, d.p2.y += origin->y1;
-    lv_draw_line(layer, &d);
+    line_in_strip(layer, &d);
+}
+
+/* ---- the analog dial's ticks, drawn once ----
+ * The 60 ticks never change while a face is shown, yet drawing them as lines
+ * cost about 19 ms a frame. So the built-in Analog face (always on black)
+ * draws them once into a full-screen picture in external RAM, and each strip
+ * of each frame copies its part of it. Two pictures are kept: the face and
+ * its always-on version. Without a matching picture the lines are drawn as
+ * before, so a new style or accent is correct at once and fast from the next
+ * build. Custom faces have their own background, so they always draw lines. */
+#define DIAL_ON_BLACK 0x100u /* analog_draw flag: ticks may come from the picture */
+
+static struct {
+    lv_draw_buf_t *buf;
+    uint32_t key;
+} dial_cache[2];
+static uint8_t dial_next;
+
+static uint32_t dial_key(bool ambient, uint8_t style, lv_color_t acc)
+{
+    return 1u | (ambient ? 2u : 0u) | ((uint32_t)style << 2) | ((uint32_t)lv_color_to_u16(acc) << 8);
+}
+
+static void draw_ticks(lv_layer_t *layer, int32_t x0, int32_t y0, bool ambient, uint8_t style, lv_color_t acc)
+{
+    init_tick_lut();
+    int step = (ambient || style == 1) ? 5 : 1;
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.round_start = 1;
+    d.round_end = 1;
+    for (int i = 0; i < 60; i += step) {
+        bool major = i % 5 == 0;
+        d.color = major ? (ambient ? C_FAINT : (style == 2 && i == 0 ? acc : C_TEXT)) : C_FAINT;
+        d.width = major ? (ambient ? 3 : 5) : 2;
+        d.p1.x = tick_lut.p1[i].x + x0;
+        d.p1.y = tick_lut.p1[i].y + y0;
+        d.p2.x = tick_lut.p2[i].x + x0;
+        d.p2.y = tick_lut.p2[i].y + y0;
+        line_in_strip(layer, &d);
+    }
+}
+
+static const lv_draw_buf_t *dial_cached(bool ambient, uint8_t style, lv_color_t acc)
+{
+    uint32_t key = dial_key(ambient, style, acc);
+    for (int i = 0; i < 2; i++) {
+        if (dial_cache[i].buf && dial_cache[i].key == key) return dial_cache[i].buf;
+    }
+    return NULL;
+}
+
+/* Called while a face is built, never while drawing. */
+static void dial_prepare(bool ambient, uint8_t style)
+{
+    lv_color_t acc = ui_accent();
+    if (dial_cached(ambient, style, acc)) return;
+    int slot = dial_next;
+    dial_next ^= 1;
+    if (!dial_cache[slot].buf) dial_cache[slot].buf = lv_draw_buf_create(SCR, SCR, LV_COLOR_FORMAT_RGB565, 0);
+    if (!dial_cache[slot].buf) return;
+    dial_cache[slot].key = 0; /* not valid until drawn */
+    static lv_obj_t *canvas;
+    if (!canvas) {
+        canvas = lv_canvas_create(lv_layer_sys());
+        lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_canvas_set_draw_buf(canvas, dial_cache[slot].buf);
+    lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
+    lv_layer_t layer;
+    lv_canvas_init_layer(canvas, &layer);
+    draw_ticks(&layer, 0, 0, ambient, style, acc);
+    lv_canvas_finish_layer(canvas, &layer);
+    dial_cache[slot].key = dial_key(ambient, style, acc);
 }
 
 static void analog_draw(lv_event_t *e)
 {
-    init_tick_lut();
     lv_obj_t *obj = lv_event_get_target_obj(e);
     uintptr_t flags = (uintptr_t)lv_event_get_user_data(e);
     bool ambient = (flags & 1) != 0;
@@ -302,20 +399,14 @@ static void analog_draw(lv_event_t *e)
     svc_localtime(&t);
     lv_color_t acc = ui_accent();
 
-    int step = (ambient || style == 1) ? 5 : 1;
-    lv_draw_line_dsc_t d;
-    lv_draw_line_dsc_init(&d);
-    d.round_start = 1;
-    d.round_end = 1;
-    for (int i = 0; i < 60; i += step) {
-        bool major = i % 5 == 0;
-        d.color = major ? (ambient ? C_FAINT : (style == 2 && i == 0 ? acc : C_TEXT)) : C_FAINT;
-        d.width = major ? (ambient ? 3 : 5) : 2;
-        d.p1.x = tick_lut.p1[i].x + a.x1;
-        d.p1.y = tick_lut.p1[i].y + a.y1;
-        d.p2.x = tick_lut.p2[i].x + a.x1;
-        d.p2.y = tick_lut.p2[i].y + a.y1;
-        lv_draw_line(layer, &d);
+    const lv_draw_buf_t *ticks = (flags & DIAL_ON_BLACK) ? dial_cached(ambient, style, acc) : NULL;
+    if (ticks) {
+        lv_draw_image_dsc_t img;
+        lv_draw_image_dsc_init(&img);
+        img.src = ticks;
+        lv_draw_image(layer, &img, &a);
+    } else {
+        draw_ticks(layer, a.x1, a.y1, ambient, style, acc);
     }
 
     float m = t.tm_min + (ambient ? 0 : t.tm_sec / 60.0f);
@@ -330,10 +421,10 @@ static void analog_draw(lv_event_t *e)
     cap.radius = LV_RADIUS_CIRCLE;
     cap.bg_color = acc;
     lv_area_t c = {a.x1 + SCR_C - 9, a.y1 + SCR_C - 9, a.x1 + SCR_C + 9, a.y1 + SCR_C + 9};
-    lv_draw_rect(layer, &cap, &c);
+    rect_in_strip(layer, &cap, &c);
     cap.bg_color = lv_color_black();
     lv_area_t c2 = {a.x1 + SCR_C - 3, a.y1 + SCR_C - 3, a.x1 + SCR_C + 3, a.y1 + SCR_C + 3};
-    lv_draw_rect(layer, &cap, &c2);
+    rect_in_strip(layer, &cap, &c2);
 }
 
 /* ---------------------------------------------------------------- building */
@@ -463,8 +554,9 @@ static void build_analog(face_t *f)
 {
     f->analog = ui_box(f->root, SCR, SCR);
     lv_obj_remove_flag(f->analog, LV_OBJ_FLAG_CLICKABLE);
-    uintptr_t flags = (f->ambient ? 1u : 0u) | ((uintptr_t)(f->style & 3) << 1);
+    uintptr_t flags = (f->ambient ? 1u : 0u) | ((uintptr_t)(f->style & 3) << 1) | DIAL_ON_BLACK;
     lv_obj_add_event_cb(f->analog, analog_draw, LV_EVENT_DRAW_MAIN, (void *)flags);
+    dial_prepare(f->ambient, f->style & 3);
 
     f->date = ui_label(f->root, "", F20, f->ambient ? C_FAINT : C_DIM);
     lv_obj_set_style_text_letter_space(f->date, 3, 0);
@@ -599,7 +691,7 @@ static void minimal_draw(lv_event_t *e)
     cap.radius = LV_RADIUS_CIRCLE;
     cap.bg_color = acc;
     lv_area_t c = {a.x1 + SCR_C - 7, a.y1 + SCR_C - 7, a.x1 + SCR_C + 7, a.y1 + SCR_C + 7};
-    lv_draw_rect(layer, &cap, &c);
+    rect_in_strip(layer, &cap, &c);
 }
 
 static void build_minimal(face_t *f)
