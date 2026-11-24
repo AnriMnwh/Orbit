@@ -287,7 +287,7 @@ static void presenter_paint(lv_timer_t *t)
     snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
     ui_label_set(pr_time, buf);
     bool up = S.link.keys_mode && S.link.status == LINK_CONNECTED;
-    ui_label_set(pr_state, up ? S.link.name : "Pair \"Orbit Keys\" on the computer");
+    ui_label_set(pr_state, up ? S.link.name : "Pair \"Orbit Keys\" first");
 }
 
 static void presenter_key(lv_event_t *e)
@@ -306,7 +306,7 @@ static void presenter_create(lv_obj_t *scr)
 {
     lv_color_t c = lv_color_hex(SLIDE_COLOR);
     pr_start = svc_millis();
-    pr_state = ui_label_fit(scr, "", F14, C_DIM, 300);
+    pr_state = ui_label_fit(scr, "", F14, C_DIM, 240); /* what the round screen allows this high up */
     lv_obj_align(pr_state, LV_ALIGN_TOP_MID, 0, 40);
     pr_time = ui_label(scr, "", F36, C_TEXT);
     lv_obj_align(pr_time, LV_ALIGN_TOP_MID, 0, 64);

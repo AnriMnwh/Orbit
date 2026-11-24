@@ -178,7 +178,7 @@ static void keys_paint_status(void)
         lv_label_set_text(k_status, S.link.name[0] ? S.link.name : "Connected");
         lv_obj_set_style_text_color(k_status, lv_color_hex(KEYS_COLOR), 0);
     } else {
-        lv_label_set_text(k_status, "Pair \"Orbit Keys\" on your computer");
+        lv_label_set_text(k_status, "Pair \"Orbit Keys\"");
         lv_obj_set_style_text_color(k_status, C_DIM, 0);
     }
 }
@@ -242,8 +242,13 @@ static void keys_create(lv_obj_t *scr)
     lv_obj_add_flag(pager, LV_OBJ_FLAG_SCROLL_ONE);
     keys_build(pager);
 
+    /* A pill in the arc above the top key. The round screen is only about
+     * 160 px wide there, so a long computer name ends in "...". */
     k_status = ui_label(scr, "", F14, C_DIM);
-    lv_obj_align(k_status, LV_ALIGN_TOP_MID, 0, 8);
+    lv_label_set_long_mode(k_status, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_max_width(k_status, 160, 0);
+    lv_obj_set_height(k_status, lv_font_get_line_height(F14));
+    lv_obj_align(k_status, LV_ALIGN_TOP_MID, 0, 18);
     lv_obj_set_style_bg_color(k_status, C_BG, 0);
     lv_obj_set_style_bg_opa(k_status, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(k_status, 10, 0);

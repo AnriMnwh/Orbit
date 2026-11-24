@@ -5,6 +5,7 @@
  * Time is simulated, so runs are deterministic and take a second or two.
  * tools/sim.ps1 builds this, runs it and turns the output into PNGs.
  */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,108 @@ void sim_swipe(int x0, int y0, int x1, int y1, uint32_t ms)
     sim_run(600);
 }
 
+/* ---- round-screen audit ----
+ * The panel is a 466 px circle, so a button or text that leaves it is cut off
+ * on the watch even though it shows in these square images. Each shot lists
+ * every visible button, label and image that crosses a circle edge_margin px
+ * inside the rim (4, or SIM_EDGE_MARGIN from the environment). Items that only
+ * cross it because their list is scrolled there are left out: scrolling
+ * brings them back. */
+
+static int edge_margin = 4;
+
+static const char *label_text(lv_obj_t *o)
+{
+    if (lv_obj_check_type(o, &lv_label_class)) return lv_label_get_text(o);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        const char *t = label_text(lv_obj_get_child(o, (int32_t)i));
+        if (t) return t;
+    }
+    return NULL;
+}
+
+/* What is actually drawn: a label's text, not the width it was given. */
+static void drawn_area(lv_obj_t *o, lv_area_t *a, int32_t *radius)
+{
+    lv_obj_get_coords(o, a);
+    *radius = lv_obj_get_style_radius(o, LV_PART_MAIN);
+    if (!lv_obj_check_type(o, &lv_label_class) || lv_obj_get_style_bg_opa(o, LV_PART_MAIN) > LV_OPA_TRANSP) return;
+    lv_point_t size;
+    lv_area_t content;
+    lv_obj_get_content_coords(o, &content);
+    lv_text_get_size(&size, lv_label_get_text(o), lv_obj_get_style_text_font(o, LV_PART_MAIN),
+                     lv_obj_get_style_text_letter_space(o, LV_PART_MAIN), lv_obj_get_style_text_line_space(o, LV_PART_MAIN),
+                     lv_area_get_width(&content), LV_TEXT_FLAG_NONE);
+    int32_t w = LV_MIN(size.x, lv_area_get_width(&content));
+    lv_text_align_t align = lv_obj_get_style_text_align(o, LV_PART_MAIN);
+    int32_t x = content.x1;
+    if (align == LV_TEXT_ALIGN_CENTER) x += (lv_area_get_width(&content) - w) / 2;
+    else if (align == LV_TEXT_ALIGN_RIGHT) x = content.x2 - w + 1;
+    a->x1 = x, a->x2 = x + w - 1;
+    a->y1 = content.y1, a->y2 = content.y1 + LV_MIN(size.y, lv_area_get_height(&content)) - 1;
+    *radius = 0;
+}
+
+/* How far past the safe circle the rounded rectangle reaches, in px. */
+static int32_t past_edge(const lv_area_t *a, int32_t radius)
+{
+    const double c = (SCR - 1) / 2.0, safe = SCR / 2.0 - edge_margin;
+    int32_t w = lv_area_get_width(a), h = lv_area_get_height(a);
+    double r = LV_MIN(radius, LV_MIN(w, h) / 2);
+    double worst = 0;
+    const double cx[2] = {a->x1 + r, a->x2 - r}, cy[2] = {a->y1 + r, a->y2 - r};
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            double d = sqrt((cx[i] - c) * (cx[i] - c) + (cy[j] - c) * (cy[j] - c)) + r;
+            if (d > worst) worst = d;
+        }
+    }
+    return worst > safe ? (int32_t)(worst - safe + 0.5) : 0;
+}
+
+/* True when the object is only outside because its list is scrolled there. */
+static bool scrolled_out(lv_obj_t *o, const lv_area_t *a)
+{
+    for (lv_obj_t *p = lv_obj_get_parent(o); p; p = lv_obj_get_parent(p)) {
+        if (!lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE)) continue;
+        if (!lv_obj_get_scroll_top(p) && !lv_obj_get_scroll_bottom(p) && !lv_obj_get_scroll_left(p) &&
+            !lv_obj_get_scroll_right(p))
+            continue;
+        lv_area_t view;
+        lv_obj_get_coords(p, &view);
+        if (a->x1 < view.x1 || a->y1 < view.y1 || a->x2 > view.x2 || a->y2 > view.y2) return true;
+        const double c = (SCR - 1) / 2.0;
+        /* A row in the narrow band at the bottom (top) of a list is fine while
+         * the list can still scroll that way: scrolling brings it to the middle.
+         * Once the list cannot, the row is stuck where the circle cuts it. */
+        if (a->y2 > c + 150 && lv_obj_get_scroll_bottom(p) > 0) return true;
+        if (a->y1 < c - 150 && lv_obj_get_scroll_top(p) > 0) return true;
+    }
+    return false;
+}
+
+static void audit(const char *shot_name, lv_obj_t *o)
+{
+    if (!lv_obj_is_visible(o) || lv_obj_get_style_opa(o, LV_PART_MAIN) == LV_OPA_TRANSP) return;
+    lv_area_t a;
+    int32_t radius;
+    drawn_area(o, &a, &radius);
+    bool big = lv_area_get_width(&a) >= SCR - 40 && lv_area_get_height(&a) >= SCR - 40; /* a page, not an item */
+    bool label = lv_obj_check_type(o, &lv_label_class), image = lv_obj_check_type(o, &lv_image_class);
+    bool button = lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE) && lv_obj_get_style_bg_opa(o, LV_PART_MAIN) > LV_OPA_TRANSP;
+    if (!big && (label || image || button) && !scrolled_out(o, &a)) {
+        int32_t over = past_edge(&a, radius);
+        if (over > 0) {
+            const char *t = label_text(o);
+            printf("EDGE %s: %s \"%.24s\" at (%d,%d)-(%d,%d) is %d px past the safe circle\n", shot_name,
+                   label ? "label" : (image ? "image" : "button"), t ? t : "", (int)a.x1, (int)a.y1, (int)a.x2, (int)a.y2,
+                   (int)over);
+        }
+        if (button) return; /* its own text is judged with it */
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) audit(shot_name, lv_obj_get_child(o, (int32_t)i));
+}
+
 static void shot(const char *name)
 {
     if (filter && !strstr(name, filter)) return;
@@ -86,12 +189,57 @@ static void shot(const char *name)
     fwrite(fb, 2, SCR * SCR, f);
     fclose(f);
     printf("shot %s\n", name);
+    audit(name, lv_screen_active());
+    audit(name, lv_layer_top());
 }
 
 static void settle(void)
 {
     lv_display_trigger_activity(NULL);
     sim_run(700);
+}
+
+/* The label showing exactly `text`, on the screen or the top layer. */
+static lv_obj_t *find_text_in(lv_obj_t *o, const char *text)
+{
+    if (lv_obj_check_type(o, &lv_label_class) && strcmp(lv_label_get_text(o), text) == 0) return o;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) {
+        lv_obj_t *hit = find_text_in(lv_obj_get_child(o, (int32_t)i), text);
+        if (hit) return hit;
+    }
+    return NULL;
+}
+
+static lv_obj_t *find_text(const char *text)
+{
+    lv_obj_t *hit = find_text_in(lv_layer_top(), text);
+    return hit ? hit : find_text_in(lv_screen_active(), text);
+}
+
+/* Scrolls the label showing `text` into view, as a finger would. */
+static lv_obj_t *show_text(const char *text)
+{
+    lv_obj_t *o = find_text(text);
+    if (!o) {
+        printf("[sim] no \"%s\" on screen\n", text);
+        return NULL;
+    }
+    lv_obj_scroll_to_view_recursive(o, LV_ANIM_OFF);
+    sim_run(100);
+    return o;
+}
+
+/* Presses whatever button holds the label showing `text`. */
+static void tap_text(const char *text)
+{
+    lv_obj_t *o = show_text(text);
+    while (o && !lv_obj_has_flag(o, LV_OBJ_FLAG_CLICKABLE)) o = lv_obj_get_parent(o);
+    if (!o) return;
+    lv_obj_send_event(o, LV_EVENT_PRESSED, NULL);
+    lv_obj_send_event(o, LV_EVENT_SHORT_CLICKED, NULL);
+    lv_obj_send_event(o, LV_EVENT_CLICKED, NULL);
+    lv_obj_send_event(o, LV_EVENT_RELEASED, NULL);
+    sim_run(300);
 }
 
 static void add_notif(uint32_t id, const char *app, const char *title, const char *body, int age_s)
@@ -274,6 +422,17 @@ static void scenarios(void)
     shot("26_keys");
     sim_swipe(233, 330, 233, 90, 240);
     shot("27_keys_page2");
+    /* A long computer name has to fit the arc above the top key. */
+    snprintf(S.link.name, sizeof(S.link.name), "%s", "Jordans-MacBook-Pro-Studio");
+    bus_emit(EVT_LINK, NULL);
+    sim_run(100);
+    shot("27b_keys_long_name");
+    S.link.status = LINK_WAITING;
+    bus_emit(EVT_LINK, NULL);
+    sim_run(100);
+    shot("27c_keys_unpaired");
+    S.link.status = LINK_CONNECTED;
+    snprintf(S.link.name, sizeof(S.link.name), "%s", "DESKTOP-ORBIT");
     shell_home();
     settle();
 
@@ -470,7 +629,53 @@ static void scenarios(void)
     open_app("faces");
     sim_run(300);
     shot("x24_face_picker");
+
+    /* Edit mode: each page of options over the face. */
+    tap_text("Edit");
+    shot("x24b_face_edit_colour");
+    show_text("STYLE");
+    shot("x24c_face_edit_style");
+    show_text("COMPLICATIONS");
+    shot("x24d_face_edit_complications");
+    shell_back();
+    sim_run(300);
+    /* The last page adds a face; its button opens the gallery. */
+    lv_obj_t *add = show_text("Add Watch Face");
+    shot("x24e_face_add");
+    if (add) {
+        lv_obj_t *plus = lv_obj_get_child(lv_obj_get_parent(add), 0);
+        lv_obj_send_event(plus, LV_EVENT_CLICKED, NULL);
+        sim_run(300);
+        shot("x24f_face_gallery");
+    }
     shell_home();
+    set_face(FACE_DIGITAL);
+    settle();
+
+    /* Every Settings page, and the two kinds of dialog. */
+    static const struct {
+        const char *row, *name;
+    } pages[] = {
+        {"Connectivity", "x40_settings_connectivity"}, {"Sound & alerts", "x41_settings_sound"},
+        {"Battery", "x42_settings_battery"},           {"Apps", "x43_settings_apps"},
+        {"Date & time", "x44_settings_time"},          {"System", "x45_settings_system"},
+    };
+    for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
+        open_app("settings");
+        tap_text(pages[i].row);
+        shot(pages[i].name);
+        shell_home();
+        settle();
+    }
+    shell_alert("Update installed", "The watch restarts in a moment to finish.");
+    sim_run(200);
+    shot("x46_alert");
+    shell_back();
+    shell_confirm("Forget every paired phone and computer?", "Forget", NULL);
+    sim_run(200);
+    shot("x47_confirm");
+    shell_back();
+    sim_run(200);
     set_face(FACE_DIGITAL);
 
     open_app("world");
@@ -539,6 +744,7 @@ int main(int argc, char **argv)
     if (argc > 1) sim_data_dir = argv[1];
     if (argc > 2) out_dir = argv[2];
     if (argc > 3) filter = argv[3];
+    if (getenv("SIM_EDGE_MARGIN")) edge_margin = atoi(getenv("SIM_EDGE_MARGIN"));
     setvbuf(stdout, NULL, _IONBF, 0);
 
     lv_init();

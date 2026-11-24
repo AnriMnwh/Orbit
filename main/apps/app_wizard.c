@@ -180,7 +180,7 @@ static void wz_tips(void)
               "Side button opens apps\nHold it to talk to the assistant",
               F20, C_DIM, 100);
     wz_button("Done", true, -62, wizard_finish, NULL);
-    lv_obj_t *dots = ui_label(root, "Everything here is also in Settings.", F14, C_FAINT);
+    lv_obj_t *dots = ui_label(root, "It's all in Settings too.", F14, C_FAINT); /* short: the circle narrows here */
     lv_obj_align(dots, LV_ALIGN_BOTTOM_MID, 0, -30);
 }
 

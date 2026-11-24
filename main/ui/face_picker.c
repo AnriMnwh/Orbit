@@ -224,10 +224,10 @@ static void edit_build(void)
         lv_obj_set_style_bg_color(hdr, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(hdr, LV_OPA_80, 0);
         lv_obj_set_style_pad_hor(hdr, 12, 0);
-        lv_obj_set_style_pad_ver(hdr, 3, 0);
+        lv_obj_set_style_pad_ver(hdr, 2, 0);
         lv_obj_set_style_radius(hdr, 12, 0);
         lv_obj_set_style_text_letter_space(hdr, 2, 0);
-        lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 12);
+        lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 22); /* low enough for "COMPLICATIONS" to fit the curve */
 
         if (ed_kind[p] == ED_COLOUR) {
             lv_obj_t *bar = ui_box(page, LV_SIZE_CONTENT, 48);
@@ -315,14 +315,16 @@ static void picker_rebuild(void)
         lv_obj_set_style_radius(name, 14, 0);
         lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 14);
 
+        /* Lifted well clear of the bottom edge, where the round screen is
+         * narrower than this row. */
         lv_obj_t *edit = ui_pill_btn(page, "Edit", C_SURF2, C_TEXT, picker_edit, (void *)(uintptr_t)f);
         lv_obj_set_height(edit, 46);
-        lv_obj_align(edit, LV_ALIGN_BOTTOM_MID, n > 1 ? -56 : 0, -14);
+        lv_obj_align(edit, LV_ALIGN_BOTTOM_MID, n > 1 ? -56 : 0, -34);
         if (n > 1) {
             lv_obj_t *mv = ui_round_btn(page, 46, C_SURF2, &ic_next_28, C_TEXT, picker_move, (void *)(intptr_t)i);
-            lv_obj_align(mv, LV_ALIGN_BOTTOM_MID, 22, -14);
+            lv_obj_align(mv, LV_ALIGN_BOTTOM_MID, 22, -34);
             lv_obj_t *hide = ui_round_btn(page, 46, ui_tint(C_BAD, 30), &ic_trash_28, C_BAD, picker_hide, (void *)(uintptr_t)f);
-            lv_obj_align(hide, LV_ALIGN_BOTTOM_MID, 78, -14);
+            lv_obj_align(hide, LV_ALIGN_BOTTOM_MID, 78, -34);
         }
     }
 
