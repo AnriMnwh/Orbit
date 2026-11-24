@@ -709,7 +709,7 @@ private fun WatchFacePreview(
                     if (compLeft != 6) drawCircle(accentColor, radius = w * 0.09f, center = Offset(cx - w * 0.16f, cy + h * 0.24f), style = Stroke(3f))
                     if (compRight != 6) drawCircle(Color.White, radius = w * 0.09f, center = Offset(cx + w * 0.16f, cy + h * 0.24f), style = Stroke(3f))
                 }
-                else -> { // Photo
+                3 -> { // Photo
                     drawCircle(
                         Brush.verticalGradient(listOf(accentColor.copy(alpha = 0.5f), Color(0xFF1A1D24))),
                         radius = w * 0.46f,
@@ -717,6 +717,37 @@ private fun WatchFacePreview(
                     )
                     val ty = if (style == 1) cy - h * 0.24f else cy + h * 0.14f
                     drawRoundRect(Color.White, Offset(cx - w * 0.20f, ty), Size(w * 0.40f, h * 0.13f), CornerRadius(5f))
+                }
+                4 -> { // Minimal: 12 batons, accent cardinals, slim hands, date pill
+                    for (i in 0 until 12) {
+                        val cardinal = i % 3 == 0
+                        val ang = (i * 30f - 90f) * Math.PI / 180.0
+                        val r0 = if (cardinal) w * 0.38f else w * 0.41f
+                        val r1 = w * 0.46f
+                        drawLine(
+                            color = if (cardinal) accentColor else Color(0xFF5F6368),
+                            start = Offset(cx + (r0 * kotlin.math.cos(ang)).toFloat(), cy + (r0 * kotlin.math.sin(ang)).toFloat()),
+                            end = Offset(cx + (r1 * kotlin.math.cos(ang)).toFloat(), cy + (r1 * kotlin.math.sin(ang)).toFloat()),
+                            strokeWidth = if (cardinal) 3.5f else 2f,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                    drawRoundRect(Color(0xFF212121), Offset(cx - w * 0.12f, cy + h * 0.16f), Size(w * 0.24f, h * 0.08f), CornerRadius(8f))
+                    drawLine(Color.White, Offset(cx, cy), Offset(cx - w * 0.14f, cy - h * 0.12f), strokeWidth = 4f, cap = StrokeCap.Round)
+                    drawLine(Color.White, Offset(cx, cy), Offset(cx + w * 0.20f, cy - h * 0.26f), strokeWidth = 2.5f, cap = StrokeCap.Round)
+                    drawLine(accentColor, Offset(cx, cy), Offset(cx, cy + h * 0.32f), strokeWidth = 1.5f, cap = StrokeCap.Round)
+                    drawCircle(accentColor, radius = 4f, center = Offset(cx, cy))
+                }
+                5 -> { // Custom: built on the setup page, tap on the watch to switch between them
+                    drawCircle(Color(0xFF071224), radius = w * 0.46f, center = Offset(cx, cy))
+                    drawRoundRect(Color.White, Offset(cx - w * 0.22f, cy - h * 0.12f), Size(w * 0.44f, h * 0.16f), CornerRadius(6f))
+                    for (i in -1..1) {
+                        drawCircle(
+                            if (i == 0) accentColor else accentColor.copy(alpha = 0.4f),
+                            radius = w * 0.035f,
+                            center = Offset(cx + i * w * 0.10f, cy + h * 0.20f),
+                        )
+                    }
                 }
             }
         }

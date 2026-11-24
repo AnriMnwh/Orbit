@@ -647,13 +647,20 @@ static void build_minimal(face_t *f)
     lv_obj_align(f->status, LV_ALIGN_CENTER, 0, -96);
 }
 
+static void custom_apply(void *arg)
+{
+    LV_UNUSED(arg);
+    settings_changed();
+    shell_toast(CUSTOM_FACES[CFG.custom_face].name);
+}
+
 static void custom_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
     if (CUSTOM_FACE_COUNT <= 1) return;
     CFG.custom_face = (uint8_t)((CFG.custom_face + 1) % CUSTOM_FACE_COUNT);
-    settings_changed();
-    shell_toast(CUSTOM_FACES[CFG.custom_face].name);
+    /* Saving rebuilds the face, this tap area included: not from inside its own event. */
+    lv_async_call(custom_apply, NULL);
 }
 
 /* User-customisable face: configured from the setup page (http://orbit.local).
@@ -911,6 +918,23 @@ static bool pk_editing;
 static uint8_t pk_edit_face;
 
 static void picker_rebuild(void);
+static void (*pk_pending)(void);
+
+static void picker_deferred(void *arg)
+{
+    LV_UNUSED(arg);
+    void (*fn)(void) = pk_pending;
+    pk_pending = NULL;
+    if (fn && pk_scr) fn();
+}
+
+/* Rebuilding the picker deletes the button being clicked, so it waits until
+ * that button's event has finished. */
+static void picker_later(void (*fn)(void))
+{
+    if (!pk_pending) lv_async_call(picker_deferred, NULL);
+    pk_pending = fn;
+}
 
 static void picker_choose(lv_event_t *e)
 {
@@ -933,7 +957,7 @@ static void picker_hide(lv_event_t *e)
     CFG.face_order[FACE_COUNT - 1] = 0xFF;
     if (CFG.face == face) CFG.face = CFG.face_order[0];
     settings_changed();
-    picker_rebuild();
+    picker_later(picker_rebuild);
 }
 
 static void picker_move(lv_event_t *e)
@@ -946,7 +970,7 @@ static void picker_move(lv_event_t *e)
     CFG.face_order[idx] = CFG.face_order[next];
     CFG.face_order[next] = tmp;
     settings_changed();
-    picker_rebuild();
+    picker_later(picker_rebuild);
 }
 
 static void gallery_add_face(lv_event_t *e)
@@ -961,10 +985,8 @@ static void gallery_add_face(lv_event_t *e)
     shell_home();
 }
 
-static void gallery_open(lv_event_t *e)
+static void gallery_build(void)
 {
-    LV_UNUSED(e);
-    if (!pk_scr) return;
     lv_obj_clean(pk_scr);
     lv_obj_t *list = ui_list(pk_scr);
     lv_obj_t *h = ui_label(list, "Add Watch Face", F24, C_TEXT);
@@ -982,9 +1004,17 @@ static void gallery_open(lv_event_t *e)
     ui_list_refresh(list);
 }
 
+static void gallery_open(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    picker_later(gallery_build);
+}
+
 /* ---- Apple Watch-style Edit Mode ---- */
 
+enum { ED_COLOUR, ED_STYLE, ED_COMPS, ED_SLOT };
 static face_t ed_faces[3];
+static uint8_t ed_kind[3];
 static lv_obj_t *ed_style_lbl, *ed_comp_lbl[2];
 
 static void edit_refresh_previews(void)
@@ -992,11 +1022,18 @@ static void edit_refresh_previews(void)
     previewing = true;
     for (int p = 0; p < 3; p++) {
         if (ed_faces[p].root) {
-            face_build_opts(&ed_faces[p], ed_faces[p].root, pk_edit_face, CFG.face_style[pk_edit_face], false, p == 2);
+            face_build_opts(&ed_faces[p], ed_faces[p].root, pk_edit_face, CFG.face_style[pk_edit_face], false,
+                            ed_kind[p] == ED_COMPS);
         }
     }
     previewing = false;
-    if (ed_style_lbl) lv_label_set_text(ed_style_lbl, STYLE_NAMES[pk_edit_face][CFG.face_style[pk_edit_face] % 3]);
+    if (ed_style_lbl) {
+        if (pk_edit_face == FACE_CUSTOM) {
+            lv_label_set_text(ed_style_lbl, CUSTOM_FACES[CFG.custom_face < CUSTOM_FACE_COUNT ? CFG.custom_face : 0].name);
+        } else {
+            lv_label_set_text(ed_style_lbl, STYLE_NAMES[pk_edit_face][CFG.face_style[pk_edit_face] % 3]);
+        }
+    }
     if (ed_comp_lbl[0]) lv_label_set_text(ed_comp_lbl[0], COMP_NAMES[CFG.comp_left % COMP_COUNT]);
     if (ed_comp_lbl[1]) lv_label_set_text(ed_comp_lbl[1], COMP_NAMES[CFG.comp_right % COMP_COUNT]);
 }
@@ -1012,6 +1049,16 @@ static void edit_style_step(lv_event_t *e)
 {
     int d = (int)(intptr_t)lv_event_get_user_data(e);
     CFG.face_style[pk_edit_face] = (uint8_t)((CFG.face_style[pk_edit_face] + d + 3) % 3);
+    settings_changed();
+    edit_refresh_previews();
+}
+
+/* Custom: step through the faces saved on the setup page. */
+static void edit_slot_step(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    if (CUSTOM_FACE_COUNT <= 1) return;
+    CFG.custom_face = (uint8_t)((CFG.custom_face + d + CUSTOM_FACE_COUNT) % CUSTOM_FACE_COUNT);
     settings_changed();
     edit_refresh_previews();
 }
@@ -1036,7 +1083,7 @@ static void edit_done(lv_event_t *e)
 
 static void edit_build(void)
 {
-    static const char *const titles[3] = {"COLOUR", "STYLE", "COMPLICATIONS"};
+    static const char *const titles[] = {"COLOUR", "STYLE", "COMPLICATIONS", "FACE"};
     pk_editing = true;
     lv_obj_clean(pk_scr);
     memset(ed_faces, 0, sizeof(ed_faces));
@@ -1050,10 +1097,18 @@ static void edit_build(void)
     lv_obj_set_scrollbar_mode(pages, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(pages, LV_FLEX_FLOW_ROW);
 
-    /* Minimal has only a colour; Custom faces are set up on the setup page. */
-    int page_count = 2;
-    if (pk_edit_face == FACE_DIGITAL || pk_edit_face == FACE_ANALOG || pk_edit_face == FACE_MODULAR) page_count = 3;
-    else if (pk_edit_face == FACE_MINIMAL) page_count = 1;
+    /* Custom faces carry their own colour and layout; Minimal has no style or
+     * complications. */
+    int page_count = 0;
+    if (pk_edit_face == FACE_CUSTOM) {
+        ed_kind[page_count++] = ED_SLOT;
+    } else {
+        ed_kind[page_count++] = ED_COLOUR;
+        if (pk_edit_face != FACE_MINIMAL) ed_kind[page_count++] = ED_STYLE;
+        if (pk_edit_face == FACE_DIGITAL || pk_edit_face == FACE_ANALOG || pk_edit_face == FACE_MODULAR) {
+            ed_kind[page_count++] = ED_COMPS;
+        }
+    }
     for (int p = 0; p < page_count; p++) {
         lv_obj_t *page = ui_box(pages, SCR, SCR);
         lv_obj_t *root = ui_box(page, SCR, SCR);
@@ -1061,7 +1116,7 @@ static void edit_build(void)
         ed_faces[p].root = root;
         ed_faces[p].photo_index = live.photo_index;
 
-        lv_obj_t *hdr = ui_label(page, titles[p], F14, ui_accent());
+        lv_obj_t *hdr = ui_label(page, titles[ed_kind[p]], F14, ui_accent());
         lv_obj_set_style_bg_color(hdr, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(hdr, LV_OPA_80, 0);
         lv_obj_set_style_pad_hor(hdr, 12, 0);
@@ -1070,7 +1125,7 @@ static void edit_build(void)
         lv_obj_set_style_text_letter_space(hdr, 2, 0);
         lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 12);
 
-        if (p == 0) {
+        if (ed_kind[p] == ED_COLOUR) {
             lv_obj_t *bar = ui_box(page, LV_SIZE_CONTENT, 48);
             lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
             lv_obj_set_style_pad_column(bar, 8, 0);
@@ -1082,8 +1137,9 @@ static void edit_build(void)
                     lv_obj_set_style_border_color(dot, C_TEXT, 0);
                 }
             }
-        } else if (p == 1) {
-            lv_obj_t *prev = ui_round_btn(page, 48, C_SURF2, &ic_prev_28, C_TEXT, edit_style_step, (void *)(intptr_t)-1);
+        } else if (ed_kind[p] == ED_STYLE || ed_kind[p] == ED_SLOT) {
+            lv_event_cb_t step = ed_kind[p] == ED_SLOT ? edit_slot_step : edit_style_step;
+            lv_obj_t *prev = ui_round_btn(page, 48, C_SURF2, &ic_prev_28, C_TEXT, step, (void *)(intptr_t)-1);
             lv_obj_align(prev, LV_ALIGN_BOTTOM_MID, -94, -66);
             ed_style_lbl = ui_label(page, "", F20, C_TEXT);
             lv_obj_set_style_bg_color(ed_style_lbl, C_SURF, 0);
@@ -1092,7 +1148,7 @@ static void edit_build(void)
             lv_obj_set_style_pad_ver(ed_style_lbl, 6, 0);
             lv_obj_set_style_radius(ed_style_lbl, 16, 0);
             lv_obj_align(ed_style_lbl, LV_ALIGN_BOTTOM_MID, 0, -72);
-            lv_obj_t *next = ui_round_btn(page, 48, C_SURF2, &ic_next_28, C_TEXT, edit_style_step, (void *)(intptr_t)1);
+            lv_obj_t *next = ui_round_btn(page, 48, C_SURF2, &ic_next_28, C_TEXT, step, (void *)(intptr_t)1);
             lv_obj_align(next, LV_ALIGN_BOTTOM_MID, 94, -66);
         } else {
             lv_obj_t *l = ui_pill_btn(page, "", C_SURF2, C_TEXT, edit_comp_step, (void *)0);
@@ -1115,7 +1171,7 @@ static void edit_build(void)
 static void picker_edit(lv_event_t *e)
 {
     pk_edit_face = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    edit_build();
+    picker_later(edit_build);
 }
 
 static void picker_rebuild(void)
@@ -1155,11 +1211,9 @@ static void picker_rebuild(void)
         lv_obj_set_style_radius(name, 14, 0);
         lv_obj_align(name, LV_ALIGN_TOP_MID, 0, 14);
 
-        if (f != FACE_CUSTOM) {
-            lv_obj_t *edit = ui_pill_btn(page, "Edit", C_SURF2, C_TEXT, picker_edit, (void *)(uintptr_t)f);
-            lv_obj_set_height(edit, 46);
-            lv_obj_align(edit, LV_ALIGN_BOTTOM_MID, n > 1 ? -56 : 0, -14);
-        }
+        lv_obj_t *edit = ui_pill_btn(page, "Edit", C_SURF2, C_TEXT, picker_edit, (void *)(uintptr_t)f);
+        lv_obj_set_height(edit, 46);
+        lv_obj_align(edit, LV_ALIGN_BOTTOM_MID, n > 1 ? -56 : 0, -14);
         if (n > 1) {
             lv_obj_t *mv = ui_round_btn(page, 46, C_SURF2, &ic_next_28, C_TEXT, picker_move, (void *)(intptr_t)i);
             lv_obj_align(mv, LV_ALIGN_BOTTOM_MID, 22, -14);
