@@ -320,6 +320,9 @@ static void stroke(lv_layer_t *layer, const lv_area_t *origin, float deg, float 
  * before, so a new style or accent is correct at once and fast from the next
  * build. Custom faces have their own background, so they always draw lines. */
 #define DIAL_ON_BLACK 0x100u /* analog_draw flag: ticks may come from the picture */
+/* Draw-callback flag: draw only the hands (and the centre cap), on the object
+ * wf_build_opts() puts above the rest of the face; without it, only the dial. */
+#define DRAW_HANDS (1u << 30)
 
 static struct {
     lv_draw_buf_t *buf;
@@ -400,20 +403,23 @@ static void analog_draw(lv_event_t *e)
     lv_area_t a;
     lv_obj_get_coords(obj, &a);
 
-    struct tm t;
-    svc_localtime(&t);
     lv_color_t acc = ui_accent();
 
-    const lv_draw_buf_t *ticks = (flags & DIAL_ON_BLACK) ? dial_cached(ambient, style, acc) : NULL;
-    if (ticks) {
-        lv_draw_image_dsc_t img;
-        lv_draw_image_dsc_init(&img);
-        img.src = ticks;
-        lv_draw_image(layer, &img, &a);
-    } else {
-        draw_ticks(layer, a.x1, a.y1, ambient, style, acc);
+    if (!(flags & DRAW_HANDS)) {
+        const lv_draw_buf_t *ticks = (flags & DIAL_ON_BLACK) ? dial_cached(ambient, style, acc) : NULL;
+        if (ticks) {
+            lv_draw_image_dsc_t img;
+            lv_draw_image_dsc_init(&img);
+            img.src = ticks;
+            lv_draw_image(layer, &img, &a);
+        } else {
+            draw_ticks(layer, a.x1, a.y1, ambient, style, acc);
+        }
+        return;
     }
 
+    struct tm t;
+    svc_localtime(&t);
     float m = t.tm_min + (ambient ? 0 : t.tm_sec / 60.0f);
     float h = (t.tm_hour % 12) + m / 60.0f;
     stroke(layer, &a, h * 30.0f, 0, 104, ambient ? 6 : 13, ambient ? C_DIM : C_TEXT);
@@ -670,20 +676,24 @@ static void minimal_draw(lv_event_t *e)
     lv_obj_t *obj = lv_event_get_target_obj(e);
     uintptr_t flags = (uintptr_t)lv_event_get_user_data(e);
     bool ambient = (flags & 1) != 0;
-    lv_color_t acc = (flags >> 8) ? ui_accent_at((int)((flags >> 8) - 1)) : ui_accent();
+    uintptr_t accent = (flags >> 8) & 0xFF;
+    lv_color_t acc = accent ? ui_accent_at((int)accent - 1) : ui_accent();
     lv_layer_t *layer = lv_event_get_layer(e);
     lv_area_t a;
     lv_obj_get_coords(obj, &a);
 
+    if (!(flags & DRAW_HANDS)) {
+        for (int i = 0; i < 12; i++) {
+            bool card = i % 3 == 0;
+            if (ambient && !card) continue;
+            stroke(layer, &a, i * 30.0f, card ? 190 : 204, 218, card ? (ambient ? 3 : 6) : 3,
+                   card ? (ambient ? C_DIM : acc) : C_FAINT);
+        }
+        return;
+    }
+
     struct tm t;
     svc_localtime(&t);
-
-    for (int i = 0; i < 12; i++) {
-        bool card = i % 3 == 0;
-        if (ambient && !card) continue;
-        stroke(layer, &a, i * 30.0f, card ? 190 : 204, 218, card ? (ambient ? 3 : 6) : 3,
-               card ? (ambient ? C_DIM : acc) : C_FAINT);
-    }
     float m = t.tm_min + (ambient ? 0 : t.tm_sec / 60.0f);
     float h = (t.tm_hour % 12) + m / 60.0f;
     stroke(layer, &a, h * 30.0f, 0, 112, ambient ? 5 : 10, ambient ? C_DIM : C_TEXT);
@@ -843,6 +853,17 @@ void wf_build_opts(face_t *f, lv_obj_t *root, uint8_t face, uint8_t style, bool 
         lv_obj_center(f->charge_arc);
         f->charge_text = ui_label(root, "", F20, C_GOOD);
         lv_obj_align(f->charge_text, LV_ALIGN_BOTTOM_MID, 0, -22);
+    }
+    /* The hands go over everything else on the face (date, complications,
+     * status, charging ring): the dial object draws only the dial, and this
+     * last child redraws its callback with DRAW_HANDS. Not clickable, so taps
+     * still reach what is under it. */
+    if (f->analog) {
+        lv_event_dsc_t *dial = lv_obj_get_event_dsc(f->analog, 0);
+        lv_obj_t *hands = ui_box(root, SCR, SCR);
+        lv_obj_remove_flag(hands, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(hands, lv_event_dsc_get_cb(dial), LV_EVENT_DRAW_MAIN,
+                            (void *)((uintptr_t)lv_event_dsc_get_user_data(dial) | DRAW_HANDS));
     }
     face_refresh(f);
 }
