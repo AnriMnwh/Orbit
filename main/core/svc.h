@@ -21,6 +21,7 @@ void svc_kv_save(const char *key, const void *buf, size_t len);
 
 /* --- display, sound, power --- */
 void svc_brightness(int percent);      /* 0 turns the panel dark */
+void svc_display_active(bool active);  /* hint for adaptive polling & light sleep */
 enum { SND_TAP, SND_NOTIFY, SND_ALARM, SND_OK, SND_ERROR };
 void svc_sound(int id);
 void svc_power_off(void);
@@ -52,13 +53,9 @@ void svc_notif_dismiss(uint32_t id);
 void svc_call(bool accept);
 
 void svc_notif_reply(uint32_t id, const char *text); /* Android only */
-void svc_link_midi_mode(bool on);
-void svc_midi(uint8_t status, uint8_t data1, uint8_t data2); /* send one MIDI message */
 
-/* --- motion and sound tools --- */
+/* --- motion --- */
 void svc_tilt(float *x, float *y, float *z); /* gravity in g; z points out of the screen */
-void svc_synth(bool on);                     /* play the synth engine through the speaker */
-void svc_tuner(bool on);                     /* listen and report pitch in S.tuner */
 
 void svc_set_time(time_t utc);           /* set the clock by hand */
 /* Wipe settings, pairings, saved networks and keys, photos and maps, then restart. */
@@ -69,7 +66,9 @@ enum { HAS_WIFI, HAS_AI_KEY, HAS_CAMERA };
 bool svc_configured(int what);           /* has this been saved on the setup page? */
 
 /* --- Wi-Fi --- */
+void svc_wifi_enable(bool on);
 void svc_wifi_setup_mode(bool on);
+void svc_web_enable(bool on);
 void svc_wifi_scan(void);                /* fills S.scan, then EVT_WIFI */
 void svc_wifi_join(const char *ssid, const char *password);
 void svc_wifi_forget(void);

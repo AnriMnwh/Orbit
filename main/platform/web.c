@@ -15,7 +15,9 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,6 +27,13 @@
 static const char *TAG = "web";
 
 #define PHOTO_MAX_BYTES (400 * 1024)
+#define WEB_IDLE_US (10 * 60 * 1000000ULL)
+
+static httpd_handle_t server;
+static esp_timer_handle_t idle_timer;
+static char web_pin[8];
+static int bad_tries;
+static uint32_t locked_until;
 
 extern const char index_html_start[] asm("_binary_index_html_start");
 extern const char index_html_end[] asm("_binary_index_html_end");
@@ -80,6 +89,75 @@ static const char *str_of(cJSON *obj, const char *key)
     return cJSON_IsString(v) ? v->valuestring : NULL;
 }
 
+static bool host_allowed(const char *host)
+{
+    if (!host || !host[0]) return false;
+    char clean[64];
+    strlcpy(clean, host, sizeof(clean));
+    char *colon = strchr(clean, ':');
+    if (colon) *colon = 0;
+    if (strcasecmp(clean, "orbit.local") == 0) return true;
+    if (strcmp(clean, "192.168.4.1") == 0) return true;
+    if (S.wifi.ip[0] && strcmp(clean, S.wifi.ip) == 0) return true;
+    return false;
+}
+
+static bool pin_equal(const char *a, const char *b)
+{
+    size_t la = strlen(a), lb = strlen(b);
+    if (la != lb || la == 0) return false;
+    uint8_t diff = 0;
+    for (size_t i = 0; i < la; i++) diff |= (uint8_t)(a[i] ^ b[i]);
+    return diff == 0;
+}
+
+static void web_touch_idle(void)
+{
+    if (idle_timer) {
+        esp_timer_stop(idle_timer);
+        esp_timer_start_once(idle_timer, WEB_IDLE_US);
+    }
+}
+
+static bool check_request(httpd_req_t *req)
+{
+    char host[64] = "", origin[96] = "", pin[16] = "";
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK || !host_allowed(host)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Invalid host");
+        return false;
+    }
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) == ESP_OK && origin[0]) {
+        const char *oh = strstr(origin, "://");
+        oh = oh ? oh + 3 : origin;
+        char ohost[64];
+        strlcpy(ohost, oh, sizeof(ohost));
+        char *slash = strchr(ohost, '/');
+        if (slash) *slash = 0;
+        if (!host_allowed(ohost)) {
+            httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Origin rejected");
+            return false;
+        }
+    }
+    uint32_t now = svc_millis();
+    if (locked_until && (int32_t)(locked_until - now) > 0) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_send(req, "Too many attempts", HTTPD_RESP_USE_STRLEN);
+        return false;
+    }
+    if (httpd_req_get_hdr_value_str(req, "X-Orbit-Pin", pin, sizeof(pin)) != ESP_OK || !pin_equal(pin, web_pin)) {
+        if (++bad_tries >= 5) {
+            locked_until = now + 30000;
+            bad_tries = 0;
+        }
+        httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "PIN required");
+        return false;
+    }
+    bad_tries = 0;
+    locked_until = 0;
+    web_touch_idle();
+    return true;
+}
+
 /* Photo file names come from the browser, so only plain names are accepted. */
 static bool safe_name(const char *name)
 {
@@ -111,6 +189,7 @@ static esp_err_t h_fallback(httpd_req_t *req, httpd_err_code_t err)
 
 static esp_err_t h_status(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char tmp[64];
     uint32_t total = 0, free_kb = 0;
     int done = 0, queued = 0;
@@ -142,6 +221,7 @@ static esp_err_t h_status(httpd_req_t *req)
 
 static esp_err_t h_scan(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     cJSON *list = cJSON_CreateArray();
     wifi_scan_config_t cfg = {.show_hidden = false};
     if (esp_wifi_scan_start(&cfg, true) == ESP_OK) {
@@ -172,6 +252,7 @@ static void rejoin_task(void *arg)
 
 static esp_err_t h_wifi(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char *body = read_body(req, 512, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
@@ -191,6 +272,7 @@ static esp_err_t h_wifi(httpd_req_t *req)
 /* The phone's browser knows the right time and time zone: take both. */
 static esp_err_t h_time(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char *body = read_body(req, 256, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
@@ -209,6 +291,7 @@ static esp_err_t h_time(httpd_req_t *req)
 
 static esp_err_t h_photo_list(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     static char names[PHOTO_LIMIT][24];
     int n = photos_list(names, PHOTO_LIMIT);
     cJSON *list = cJSON_CreateArray();
@@ -218,6 +301,7 @@ static esp_err_t h_photo_list(httpd_req_t *req)
 
 static esp_err_t h_photo_get(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     const char *name = strrchr(req->uri, '/');
     char clean[24];
     strlcpy(clean, name ? name + 1 : "", sizeof(clean));
@@ -242,6 +326,7 @@ static esp_err_t h_photo_get(httpd_req_t *req)
 
 static esp_err_t h_photo_add(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char path[64], name[24];
     if (req->content_len < 200 || req->content_len > PHOTO_MAX_BYTES) return fail(req, "photo too large");
     if (!photos_new_path(path, sizeof(path), name)) return fail(req, "photo library is full");
@@ -276,6 +361,7 @@ static esp_err_t h_photo_add(httpd_req_t *req)
 
 static esp_err_t h_photo_delete(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char query[64], name[24];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK || !safe_name(name)) {
@@ -292,6 +378,7 @@ static esp_err_t h_photo_delete(httpd_req_t *req)
 
 static esp_err_t h_macro_get(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     cJSON *list = cJSON_CreateArray();
     for (int i = 0; i < MACRO_MAX; i++) {
         const macro_t *m = &MACROS[i];
@@ -322,6 +409,7 @@ static int num_of(cJSON *obj, const char *key)
 
 static esp_err_t h_macro_set(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char *body = read_body(req, 6000, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
@@ -355,6 +443,7 @@ static esp_err_t h_macro_set(httpd_req_t *req)
 /* Write-only: values go into flash and are never served back. */
 static esp_err_t h_secrets(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     static const char *const keys[] = {"ai_key", "ai_chat", "ai_stt", "ai_tts", "ai_voice", "cam_ssid", "cam_pass", "tile_url"};
     char *body = read_body(req, 1024, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
@@ -373,6 +462,7 @@ static esp_err_t h_secrets(httpd_req_t *req)
 
 static esp_err_t h_tiles(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     char *body = read_body(req, 256, NULL);
     cJSON *j = body ? cJSON_Parse(body) : NULL;
     free(body);
@@ -398,9 +488,16 @@ static esp_err_t h_tiles(httpd_req_t *req)
 #define UPDATE_WINDOW_S 300
 static uint32_t update_until; /* svc_millis() deadline, 0 = closed */
 
+bool web_update_window_open(void)
+{
+    return update_until != 0 && (int32_t)(update_until - svc_millis()) > 0;
+}
+
 int svc_update_allow(void)
 {
+    web_enable(true);
     update_until = svc_millis() + UPDATE_WINDOW_S * 1000;
+    more_ota_notify();
     return UPDATE_WINDOW_S;
 }
 
@@ -416,6 +513,7 @@ static void restart_task(void *arg)
  * nobody else on the network can replace the firmware. */
 static esp_err_t h_update(httpd_req_t *req)
 {
+    if (!check_request(req)) return ESP_OK;
     if (!update_until || (int32_t)(update_until - svc_millis()) < 0) {
         return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "On the watch: Settings, System, Allow update");
     }
@@ -447,16 +545,76 @@ static esp_err_t h_update(httpd_req_t *req)
 
 /* ------------------------------------------------------------------ start */
 
-void web_start(void)
+typedef struct {
+    bool active;
+    char pin[8];
+} web_ui_t;
+
+static void web_apply(void *arg)
 {
+    web_ui_t *w = arg;
+    S.wifi.web_active = w->active;
+    strlcpy(S.wifi.web_pin, w->pin, sizeof(S.wifi.web_pin));
+    free(w);
+    bus_emit(EVT_WIFI, NULL);
+}
+
+static void web_publish(void)
+{
+    web_ui_t *w = calloc(1, sizeof(*w));
+    if (!w) return;
+    w->active = server != NULL;
+    strlcpy(w->pin, server ? web_pin : "", sizeof(w->pin));
+    ui_post(web_apply, w);
+}
+
+static void idle_cb(void *arg)
+{
+    LV_UNUSED(arg);
+    web_enable(false);
+}
+
+const char *web_pin_get(void)
+{
+    return web_pin;
+}
+
+bool web_is_active(void)
+{
+    return server != NULL;
+}
+
+void web_enable(bool on)
+{
+    if (!on) {
+        if (idle_timer) esp_timer_stop(idle_timer);
+        if (server) {
+            httpd_stop(server);
+            server = NULL;
+            ESP_LOGI(TAG, "setup page stopped");
+        }
+        web_pin[0] = 0;
+        net_release(NET_NEED_SETUP);
+        web_publish();
+        return;
+    }
+    net_acquire(NET_NEED_SETUP);
+    if (server) {
+        web_touch_idle();
+        return;
+    }
+    snprintf(web_pin, sizeof(web_pin), "%06u", (unsigned)(esp_random() % 1000000u));
+    bad_tries = 0;
+    locked_until = 0;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers = 20;
     cfg.stack_size = 8192;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.lru_purge_enable = true;
-    httpd_handle_t server = NULL;
     if (httpd_start(&server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "setup page did not start");
+        server = NULL;
+        web_publish();
         return;
     }
     static const httpd_uri_t routes[] = {
@@ -477,4 +635,17 @@ void web_start(void)
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) httpd_register_uri_handler(server, &routes[i]);
     httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, h_fallback);
+
+    if (!idle_timer) {
+        const esp_timer_create_args_t t = {.callback = idle_cb, .name = "web-idle"};
+        esp_timer_create(&t, &idle_timer);
+    }
+    web_touch_idle();
+    ESP_LOGI(TAG, "setup page started");
+    web_publish();
+}
+
+void svc_web_enable(bool on)
+{
+    web_enable(on);
 }

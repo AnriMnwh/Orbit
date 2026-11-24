@@ -288,16 +288,20 @@ the file name the watch gave it, which the phone uses later to delete it.
 ### Watch settings from the phone (`cfg`)
 
 ```
-watch: {"t":"cfg","brightness":70,"dnd":false,"h24":true,"raise":true,"sound":true,"aod":1,"timeout":15,"goal":8000}
+watch: {"t":"cfg","brightness":70,"dnd":false,"h24":true,"raise":true,"sound":true,"aod":1,"timeout":15,"goal":8000,"face":0,"accent":0,"compL":0,"compR":1,"grid":false,"faces":[0,1,2,3],"styles":[0,0,0,0]}
 phone: GB({"t":"cfg","set":{"brightness":40}})
 ```
 
-The watch always sends all eight: after its hello, whenever one changes on the
-watch, and after every `set` (even one that changed nothing), so the app is
+The watch always sends all settings: after its hello, whenever one changes on
+the watch, and after every `set` (even one that changed nothing), so the app is
 corrected at once if a change did not take. The phone changes one at a time,
 though several in one `set` are all applied. `aod` is 0 off, 1 clock, 2
-photos; `timeout` is seconds; `goal` is steps a day. Limits: brightness 5 to
-100, timeout 5 to 120, goal 1000 to 60000.
+photos; `timeout` is seconds; `goal` is steps a day; `face` is 0 Digital,
+1 Analog, 2 Modular, 3 Photo; `compL`/`compR` are 0..6 (Battery, Steps,
+Weather, Day, Pet, Agenda, None); `faces` is the ordered list of visible face
+indices (1..4 unique); `styles` is the 0..2 style per face; `grid` toggles the
+3-column icon app launcher. Limits: brightness 5 to 100, timeout 5 to 120,
+goal 1000 to 60000.
 
 ### Step history (`act`)
 
@@ -328,6 +332,16 @@ phone: GB({"t":"phone","bat":80,"chg":false})
 
 On connecting, then when it moves by five percent or charging starts or stops.
 `bat` is 0 to 100 and required. The watch forgets it on disconnect.
+
+### Firmware update (`ota`)
+
+```
+watch: {"t":"ota","ip":"192.168.1.42","pin":"482910","window":300}
+```
+
+Sent over the encrypted link when **Allow update** is pressed on the watch (and
+again when Wi-Fi obtains an IP). The phone app uses `ip` and `pin` to stream
+`orbit.bin` directly to `http://<ip>/api/update` with `X-Orbit-Pin`.
 
 ## Later
 

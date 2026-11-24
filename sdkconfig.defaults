@@ -33,17 +33,19 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 
-# --- Power: frequency scaling only. Light sleep comes after hardware testing ---
+# --- Power: frequency scaling + tickless light sleep ---
 CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_PM_USE_RTC_TIMER_REF=y
 
 # --- LVGL ---
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_OS_FREERTOS=y
-CONFIG_LV_DEF_REFR_PERIOD=15
+CONFIG_LV_DEF_REFR_PERIOD=16
 CONFIG_LV_OBJ_STYLE_CACHE=y
-CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
 # Not CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM: with Wi-Fi and Bluetooth both in
 # the build, LVGL's hot code no longer fits in the chip's fast internal RAM
 # (the link fails), and that RAM is better spent on the radio stacks anyway.

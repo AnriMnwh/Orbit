@@ -4,14 +4,17 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,9 +29,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -40,6 +45,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,13 +56,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -64,8 +78,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.anari.orbit.link.BatteryCharge
-import com.anari.orbit.link.VisionChoice
 import com.anari.orbit.link.WatchConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -450,29 +462,14 @@ fun WatchTab(watch: WatchState, access: Access, settings: Settings, request: (Ar
 
     Heading("Watch", statusLine(watch))
 
-    Section("Look")
+    Section("Watch faces")
     Group {
         if (config != null) {
-            Picker("Watch face", WatchConfig.FACES, config.face) { Hub.service?.configure("face", it) }
+            WatchFacesSection(config)
             Accents(config.accent) { Hub.service?.configure("accent", it) }
         } else {
-            Note(if (watch.connected) "The watch's face and colour will appear here. $OLD_SOFTWARE" else "Connect the watch to choose its face and colour.")
+            Note(if (watch.connected) "The watch's face and colour will appear here. $OLD_SOFTWARE" else "Connect the watch to choose and edit watch faces.")
         }
-    }
-
-    val vision = watch.vision?.takeIf { watch.connected && "vision" in watch.caps }
-    if (vision != null) {
-        Section("Vision")
-        Group {
-            Picker("Element", VisionChoice.ELEMENTS, vision.element) { Hub.service?.setVision("el", it) }
-            Picker("Region", VisionChoice.REGIONS, vision.region) { Hub.service?.setVision("region", it) }
-        }
-    }
-
-    val charge = watch.batteryCharge?.takeIf { watch.connected && "zzz" in watch.caps }
-    if (charge != null) {
-        Section("Battery Charge")
-        Group { BatteryChargeTracker(charge) }
     }
 
     if (config != null) {
@@ -509,6 +506,9 @@ fun WatchTab(watch: WatchState, access: Access, settings: Settings, request: (Ar
     Section("Assistant")
     Group { Assistant(settings, watch.assistant) }
 
+    Section("Firmware update")
+    Group { FirmwareUpdate(watch) }
+
     Section("Permissions")
     Group {
         RequiredSteps(access, request)
@@ -543,6 +543,263 @@ fun WatchTab(watch: WatchState, access: Access, settings: Settings, request: (Ar
             },
         ) { Text("Forget this watch", color = MaterialTheme.colorScheme.error) }
     }
+}
+
+@Composable
+private fun WatchFacesSection(config: WatchConfig) {
+    val accent = Brand.Accents.getOrElse(config.accent) { Brand.Accents[0] }.first
+    var editingFace by remember { mutableStateOf<Int?>(null) }
+    val hiddenFaces = WatchConfig.FACES.indices.filter { it !in config.faces }
+
+    Column(Modifier.padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("My faces", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodyLarge)
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            for (faceId in config.faces) {
+                val isActive = config.face == faceId
+                val style = config.styles.getOrElse(faceId) { 0 }
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(contentAlignment = Alignment.BottomCenter) {
+                        WatchFacePreview(
+                            face = faceId,
+                            style = style,
+                            accentColor = accent,
+                            compLeft = config.compLeft,
+                            compRight = config.compRight,
+                            active = isActive,
+                            modifier = Modifier.size(104.dp).clip(CircleShape).clickable {
+                                Hub.service?.configure("face", faceId)
+                            },
+                        )
+                        if (isActive) {
+                            Text(
+                                "ACTIVE",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Black,
+                                modifier = Modifier
+                                    .padding(bottom = 6.dp)
+                                    .background(accent, RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        WatchConfig.FACES.getOrElse(faceId) { "Face" },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                    )
+                    FilledTonalButton(
+                        onClick = { editingFace = faceId },
+                        modifier = Modifier.height(32.dp),
+                    ) { Text("Edit", style = MaterialTheme.typography.labelMedium) }
+                }
+            }
+        }
+
+        if (hiddenFaces.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text("Face gallery", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.bodyLarge)
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                for (faceId in hiddenFaces) {
+                    val style = config.styles.getOrElse(faceId) { 0 }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        WatchFacePreview(
+                            face = faceId,
+                            style = style,
+                            accentColor = accent,
+                            compLeft = config.compLeft,
+                            compRight = config.compRight,
+                            active = false,
+                            modifier = Modifier.size(88.dp).clip(CircleShape).clickable {
+                                Hub.service?.configure("faces", config.faces + faceId)
+                                Hub.service?.configure("face", faceId)
+                            },
+                        )
+                        Text(WatchConfig.FACES.getOrElse(faceId) { "Face" }, style = MaterialTheme.typography.labelMedium)
+                        TextButton(onClick = {
+                            Hub.service?.configure("faces", config.faces + faceId)
+                            Hub.service?.configure("face", faceId)
+                        }) { Text("Add") }
+                    }
+                }
+            }
+        }
+    }
+
+    editingFace?.let { faceId ->
+        FaceEditDialog(
+            faceId = faceId,
+            config = config,
+            accentColor = accent,
+            onDismiss = { editingFace = null },
+        )
+    }
+}
+
+@Composable
+private fun WatchFacePreview(
+    face: Int,
+    style: Int,
+    accentColor: Color,
+    compLeft: Int,
+    compRight: Int,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val borderColor = if (active) accentColor else MaterialTheme.colorScheme.outlineVariant
+    Box(
+        modifier
+            .background(Color.Black, CircleShape)
+            .border(if (active) 3.dp else 1.5.dp, borderColor, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.matchParentSize().padding(6.dp)) {
+            val w = size.width
+            val h = size.height
+            val cx = w / 2f
+            val cy = h / 2f
+            when (face) {
+                0 -> { // Digital
+                    if (style == 1) {
+                        drawRoundRect(accentColor, Offset(cx - w * 0.28f, cy - h * 0.22f), Size(w * 0.56f, h * 0.18f), CornerRadius(6f))
+                        if (compLeft != 6) drawCircle(accentColor, radius = w * 0.10f, center = Offset(cx - w * 0.16f, cy + h * 0.18f), style = Stroke(3f))
+                        if (compRight != 6) drawCircle(Color.White, radius = w * 0.10f, center = Offset(cx + w * 0.16f, cy + h * 0.18f), style = Stroke(3f))
+                    } else {
+                        drawRoundRect(accentColor, Offset(cx - w * 0.18f, cy - h * 0.28f), Size(w * 0.36f, h * 0.20f), CornerRadius(6f))
+                        drawRoundRect(Color(0xFFF1F3F4), Offset(cx - w * 0.18f, cy - h * 0.02f), Size(w * 0.36f, h * 0.20f), CornerRadius(6f))
+                        if (style != 2) {
+                            if (compLeft != 6) drawCircle(accentColor, radius = w * 0.09f, center = Offset(cx - w * 0.32f, cy), style = Stroke(3f))
+                            if (compRight != 6) drawCircle(Color.White, radius = w * 0.09f, center = Offset(cx + w * 0.32f, cy), style = Stroke(3f))
+                        }
+                    }
+                }
+                1 -> { // Analog
+                    val ticks = if (style == 1) 12 else 24
+                    for (i in 0 until ticks) {
+                        val ang = (i * (360f / ticks) - 90f) * Math.PI / 180.0
+                        val r0 = w * 0.40f
+                        val r1 = w * 0.46f
+                        drawLine(
+                            color = if (style == 2 && i == 0) accentColor else Color(0xFF9EA4B0),
+                            start = Offset(cx + (r0 * kotlin.math.cos(ang)).toFloat(), cy + (r0 * kotlin.math.sin(ang)).toFloat()),
+                            end = Offset(cx + (r1 * kotlin.math.cos(ang)).toFloat(), cy + (r1 * kotlin.math.sin(ang)).toFloat()),
+                            strokeWidth = if (i % (ticks / 12) == 0) 3f else 1.5f,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                    if (style == 0) {
+                        if (compLeft != 6) drawCircle(accentColor, radius = w * 0.08f, center = Offset(cx - w * 0.22f, cy), style = Stroke(2.5f))
+                        if (compRight != 6) drawCircle(Color.White, radius = w * 0.08f, center = Offset(cx + w * 0.22f, cy), style = Stroke(2.5f))
+                    }
+                    drawLine(Color.White, Offset(cx, cy), Offset(cx - w * 0.16f, cy - h * 0.14f), strokeWidth = 5f, cap = StrokeCap.Round)
+                    drawLine(if (style == 2) accentColor else Color.White, Offset(cx, cy), Offset(cx + w * 0.22f, cy - h * 0.24f), strokeWidth = 3.5f, cap = StrokeCap.Round)
+                    drawLine(accentColor, Offset(cx, cy), Offset(cx, cy + h * 0.28f), strokeWidth = 2f, cap = StrokeCap.Round)
+                    drawCircle(accentColor, radius = 4f, center = Offset(cx, cy))
+                }
+                2 -> { // Modular
+                    drawRoundRect(accentColor, Offset(cx - w * 0.20f, cy - h * 0.34f), Size(w * 0.40f, h * 0.13f), CornerRadius(5f))
+                    drawRoundRect(Color(0xFF212121), Offset(cx - w * 0.34f, cy - h * 0.12f), Size(w * 0.68f, h * 0.22f), CornerRadius(10f))
+                    drawRoundRect(accentColor.copy(alpha = 0.7f), Offset(cx - w * 0.28f, cy - h * 0.06f), Size(w * 0.42f, h * 0.04f), CornerRadius(3f))
+                    if (compLeft != 6) drawCircle(accentColor, radius = w * 0.09f, center = Offset(cx - w * 0.16f, cy + h * 0.24f), style = Stroke(3f))
+                    if (compRight != 6) drawCircle(Color.White, radius = w * 0.09f, center = Offset(cx + w * 0.16f, cy + h * 0.24f), style = Stroke(3f))
+                }
+                else -> { // Photo
+                    drawCircle(
+                        Brush.verticalGradient(listOf(accentColor.copy(alpha = 0.5f), Color(0xFF1A1D24))),
+                        radius = w * 0.46f,
+                        center = Offset(cx, cy),
+                    )
+                    val ty = if (style == 1) cy - h * 0.24f else cy + h * 0.14f
+                    drawRoundRect(Color.White, Offset(cx - w * 0.20f, ty), Size(w * 0.40f, h * 0.13f), CornerRadius(5f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FaceEditDialog(faceId: Int, config: WatchConfig, accentColor: Color, onDismiss: () -> Unit) {
+    val faceName = WatchConfig.FACES.getOrElse(faceId) { "Face" }
+    val styles = WatchConfig.FACE_STYLES.getOrElse(faceId) { listOf("Default") }
+    val currentStyle = config.styles.getOrElse(faceId) { 0 }
+    val pos = config.faces.indexOf(faceId)
+    val canHide = config.faces.size > 1
+    val hasComps = faceId in 0..2
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit $faceName") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    WatchFacePreview(
+                        face = faceId,
+                        style = currentStyle,
+                        accentColor = accentColor,
+                        compLeft = config.compLeft,
+                        compRight = config.compRight,
+                        active = config.face == faceId,
+                        modifier = Modifier.size(132.dp),
+                    )
+                }
+                Picker("Style", styles, currentStyle) { newStyle ->
+                    val next = config.styles.toMutableList().apply { while (size < 4) add(0); this[faceId] = newStyle }
+                    Hub.service?.configure("styles", next)
+                }
+                Accents(config.accent) { Hub.service?.configure("accent", it) }
+                if (hasComps) {
+                    Picker("Left complication", WatchConfig.COMPLICATIONS, config.compLeft) {
+                        Hub.service?.configure("compL", it)
+                    }
+                    Picker("Right complication", WatchConfig.COMPLICATIONS, config.compRight) {
+                        Hub.service?.configure("compR", it)
+                    }
+                }
+                if (config.faces.size > 1 && pos >= 0) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(
+                            enabled = pos > 0,
+                            onClick = {
+                                val next = config.faces.toMutableList()
+                                next[pos] = next[pos - 1].also { next[pos - 1] = next[pos] }
+                                Hub.service?.configure("faces", next)
+                            },
+                        ) { Text("Move left") }
+                        FilledTonalButton(
+                            enabled = pos < config.faces.lastIndex,
+                            onClick = {
+                                val next = config.faces.toMutableList()
+                                next[pos] = next[pos + 1].also { next[pos + 1] = next[pos] }
+                                Hub.service?.configure("faces", next)
+                            },
+                        ) { Text("Move right") }
+                    }
+                }
+                if (canHide) {
+                    TextButton(onClick = {
+                        Hub.service?.configure("faces", config.faces.filter { it != faceId })
+                        onDismiss()
+                    }) { Text("Hide from watch", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                Hub.service?.configure("face", faceId)
+                onDismiss()
+            }) { Text("Use face") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 /** One choice from a short list, as chips that wrap onto more lines when they need to. */
@@ -591,86 +848,6 @@ private fun Accents(current: Int, choose: (Int) -> Unit) {
     }
 }
 
-/** The count is worked out on the phone between the watch's reports, and moves on by itself. */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun BatteryChargeTracker(charge: BatteryCharge) {
-    val now by produceState(System.currentTimeMillis() / 1000) {
-        while (true) {
-            delay(20_000)
-            value = System.currentTimeMillis() / 1000
-        }
-    }
-    val count = charge.at(now)
-    var setting by remember { mutableStateOf(false) }
-    // The watch's ZZZ app keeps yellow for this one number. It only reads on the dark ground.
-    val numberColor = if (isSystemInDarkTheme()) Brand.BatteryCharge else MaterialTheme.colorScheme.onSurface
-    val fullAt = Instant.ofEpochSecond(charge.fullAt).atZone(ZoneId.systemDefault())
-
-    Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("$count", style = MaterialTheme.typography.displaySmall, color = numberColor)
-            Text("of ${BatteryCharge.MAX}", Modifier.padding(bottom = 6.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Text(
-            when {
-                count >= BatteryCharge.MAX -> "Full"
-                charge.fullAt == 0L -> "Not counting yet. Set the count once and the watch keeps it from there."
-                else -> "Full at " + DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(fullAt) +
-                    if (fullAt.toLocalDate() == LocalDate.now()) "" else " tomorrow"
-            },
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(8.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (spend in listOf(20, 40, 60)) {
-                FilledTonalButton(enabled = count >= spend, onClick = { Hub.service?.setBatteryCharge("spend", spend) }) { Text("Spend $spend") }
-            }
-            TextButton(onClick = { setting = true }) { Text("Set count") }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text("Today's errands", style = MaterialTheme.typography.bodyLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for ((bit, label) in BatteryCharge.ERRANDS) {
-                FilterChip(
-                    selected = charge.done and bit != 0,
-                    onClick = { Hub.service?.setBatteryCharge("done", charge.done xor bit) },
-                    label = { Text(label) },
-                )
-            }
-        }
-    }
-
-    if (setting) {
-        var typed by remember { mutableStateOf("$count") }
-        val value = typed.toIntOrNull()?.takeIf { it in 0..BatteryCharge.MAX }
-        AlertDialog(
-            onDismissRequest = { setting = false },
-            title = { Text("Battery Charge now") },
-            text = {
-                OutlinedTextField(
-                    value = typed,
-                    onValueChange = { typed = it.filter(Char::isDigit).take(3) },
-                    singleLine = true,
-                    isError = value == null,
-                    supportingText = { Text("0 to ${BatteryCharge.MAX}, as the game shows it") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = value != null,
-                    onClick = {
-                        value?.let { Hub.service?.setBatteryCharge("charge", it) }
-                        setting = false
-                    },
-                ) { Text("Set") }
-            },
-            dismissButton = { TextButton(onClick = { setting = false }) { Text("Cancel") } },
-        )
-    }
-}
-
 @Composable
 private fun WatchSettings(config: WatchConfig) {
     var brightness by remember(config.brightness) { mutableFloatStateOf(config.brightness.toFloat()) }
@@ -690,6 +867,9 @@ private fun WatchSettings(config: WatchConfig) {
     SwitchLine("24-hour clock", "", config.clock24) { Hub.service?.configure("h24", it) }
     SwitchLine("Raise to wake", "The screen lights when you lift your wrist.", config.raiseToWake) { Hub.service?.configure("raise", it) }
     SwitchLine("Sounds", "", config.sound) { Hub.service?.configure("sound", it) }
+    SwitchLine("Grid app launcher", "Show apps in a 3-column icon grid instead of a list.", config.gridLauncher) {
+        Hub.service?.configure("grid", it)
+    }
     Picker("Always-on display", listOf("Off", "Clock", "Photos"), config.alwaysOn) { Hub.service?.configure("aod", it) }
     val timeouts = listOf(10, 15, 30, 60)
     Picker("Screen rests after", listOf("10 s", "15 s", "30 s", "1 min"), timeouts.indexOf(config.timeoutSeconds)) {
@@ -748,6 +928,120 @@ private fun Assistant(settings: Settings, activity: String) {
             ModelName("Text to speech", settings.ttsModel) { settings.ttsModel = it }
             ModelName("Voice", settings.voice) { settings.voice = it }
         }
+    }
+}
+
+@Composable
+private fun FirmwareUpdate(watch: WatchState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ota = watch.ota?.takeIf { System.currentTimeMillis() < it.expiresAtMs }
+
+    var host by remember { mutableStateOf("orbit.local") }
+    var pin by remember { mutableStateOf("") }
+    var manual by remember { mutableStateOf(false) }
+    var pickedUri by remember { mutableStateOf<Uri?>(null) }
+    var pickedName by remember { mutableStateOf("") }
+    var progress by remember { mutableStateOf<Float?>(null) }
+    var statusMsg by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+
+    LaunchedEffect(ota) {
+        if (ota != null) {
+            if (ota.ip.isNotBlank()) host = ota.ip
+            if (ota.pin.isNotBlank()) pin = ota.pin
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            pickedUri = uri
+            pickedName = OtaUpdater.fileName(context, uri)
+            statusMsg = ""
+            isError = false
+        }
+    }
+
+    Column(Modifier.padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (watch.firmware.isNotEmpty()) {
+            Text("Current: ${watch.firmware}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (ota != null) {
+            val where = ota.ip.ifBlank { "connecting to Wi-Fi…" }
+            Text(
+                "Watch ready for update ($where · PIN ${ota.pin})",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Brand.Good,
+            )
+        } else {
+            Text(
+                "On the watch, open Settings > System > Allow update, then choose orbit.bin below.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilledTonalButton(enabled = progress == null, onClick = { picker.launch(arrayOf("*/*")) }) {
+                Text(if (pickedName.isEmpty()) "Choose .bin file" else pickedName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            TextButton(onClick = { manual = !manual }) {
+                Text(if (manual) "Hide IP/PIN" else "Enter IP & PIN")
+            }
+        }
+
+        if (manual) {
+            OutlinedTextField(
+                value = host,
+                onValueChange = { host = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Watch IP or hostname") },
+                placeholder = { Text("orbit.local or 192.168.4.1") },
+                singleLine = true,
+            )
+            OutlinedTextField(
+                value = pin,
+                onValueChange = { pin = it.filter(Char::isDigit).take(6) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("6-digit PIN") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+            )
+        }
+
+        progress?.let { p ->
+            LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth())
+        }
+
+        if (statusMsg.isNotEmpty()) {
+            Text(
+                statusMsg,
+                color = if (isError) MaterialTheme.colorScheme.error else Brand.Good,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+
+        val canInstall = pickedUri != null && progress == null && OtaUpdater.isLocalHost(host) && pin.length == 6
+        Button(
+            enabled = canInstall,
+            onClick = {
+                val uri = pickedUri ?: return@Button
+                progress = 0f
+                statusMsg = "Uploading firmware…"
+                isError = false
+                scope.launch {
+                    val result = OtaUpdater.upload(context, uri, host, pin) { progress = it }
+                    progress = null
+                    result.onSuccess {
+                        statusMsg = "Installed! The watch is restarting."
+                        isError = false
+                    }.onFailure { err ->
+                        statusMsg = "Update failed: ${err.message ?: "unknown error"}"
+                        isError = true
+                    }
+                }
+            },
+        ) { Text(if (progress != null) "Installing…" else "Install firmware") }
     }
 }
 

@@ -30,7 +30,6 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
-#include "../core/synth.h"
 #include "platform.h"
 
 static const char *TAG = "ble";
@@ -39,21 +38,20 @@ void ble_store_config_init(void);
 
 #define NAME_PHONE "Orbit"
 #define NAME_KEYS "Orbit Keys"
-#define NAME_MIDI "Orbit MIDI"
 #define APPEARANCE_WATCH 0x00C0
 #define APPEARANCE_KEYBOARD 0x03C1
 
 static uint16_t conn = BLE_HS_CONN_HANDLE_NONE;
-static bool synced, keys_mode, want_keys, midi_mode, want_midi, encrypted, gb_seen, app_mode;
+static bool synced, keys_mode, want_keys, encrypted, gb_seen, app_mode;
 static peer_kind_t peer = PEER_NONE;
 static char peer_name[32];
-static uint8_t keys_addr[6], midi_addr[6];
+static uint8_t keys_addr[6];
 static esp_timer_handle_t secure_timer;
 static QueueHandle_t hid_jobs;
 
-static ble_uuid_any_t U_NUS, U_NUS_RX, U_NUS_TX, U_ANCS, U_MIDI, U_MIDI_IO, U_BULK, U_BULK_RX, U_BULK_TX;
-static uint16_t nus_tx_handle, kbd_handle, consumer_handle, batt_handle, midi_handle, bulk_tx_handle;
-static uint16_t nus_svc, hid_svc, midi_svc, bulk_svc;
+static ble_uuid_any_t U_NUS, U_NUS_RX, U_NUS_TX, U_ANCS, U_BULK, U_BULK_RX, U_BULK_TX;
+static uint16_t nus_tx_handle, kbd_handle, consumer_handle, batt_handle, bulk_tx_handle;
+static uint16_t nus_svc, hid_svc, bulk_svc;
 
 /* ------------------------------------------------------------- UI updates */
 
@@ -72,7 +70,6 @@ static void publish(void)
     l->status = conn != BLE_HS_CONN_HANDLE_NONE ? LINK_CONNECTED : (synced ? LINK_WAITING : LINK_OFF);
     l->peer = conn != BLE_HS_CONN_HANDLE_NONE ? (keys_mode ? PEER_KEYS : peer) : PEER_NONE;
     l->keys_mode = want_keys;
-    l->midi_mode = want_midi;
     l->app = app_mode && conn != BLE_HS_CONN_HANDLE_NONE;
     if (conn != BLE_HS_CONN_HANDLE_NONE) strlcpy(l->name, peer_name, sizeof(l->name));
     ui_post(link_apply, l);
@@ -80,7 +77,7 @@ static void publish(void)
 
 bool ble_phone_is_android(void)
 {
-    return conn != BLE_HS_CONN_HANDLE_NONE && !keys_mode && !midi_mode && peer == PEER_ANDROID;
+    return conn != BLE_HS_CONN_HANDLE_NONE && !keys_mode && peer == PEER_ANDROID;
 }
 
 /* -------------------------------------------------------------- HID data */
@@ -159,51 +156,8 @@ static int nus_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ct
     return 0;
 }
 
-/* ---- Bluetooth MIDI ---- */
-
 static void notify(uint16_t handle, const void *data, size_t len);
 static int bulk_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
-
-static void midi_in_apply(void *arg)
-{
-    uint32_t m = (uint32_t)(uintptr_t)arg;
-    uint8_t status = (uint8_t)(m >> 16), note = (uint8_t)(m >> 8), velocity = (uint8_t)m;
-    if ((status & 0xF0) == 0x90 && velocity) synth_note_on(note, velocity);
-    else if ((status & 0xF0) == 0x80 || (status & 0xF0) == 0x90) synth_note_off(note);
-}
-
-/* A host playing the watch's synth. Each message in a BLE MIDI packet is
- * preceded by a timestamp byte (top bit set), and may reuse the last status. */
-static int midi_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0; /* reads return an empty value */
-    uint8_t b[64];
-    uint16_t len = 0;
-    if (ble_hs_mbuf_to_flat(ctxt->om, b, sizeof(b), &len) != 0) return 0;
-    uint8_t status = 0;
-    for (int i = 1; i < len;) {
-        if (b[i] & 0x80) {
-            i++; /* timestamp */
-            if (i < len && (b[i] & 0x80)) status = b[i++];
-        }
-        uint8_t kind = status & 0xF0;
-        int data = (kind == 0xC0 || kind == 0xD0) ? 1 : 2;
-        if (!status || kind == 0xF0 || i + data > len) break;
-        if (kind == 0x80 || kind == 0x90) {
-            ui_post(midi_in_apply, (void *)(uintptr_t)(((uint32_t)status << 16) | ((uint32_t)b[i] << 8) | b[i + 1]));
-        }
-        i += data;
-    }
-    return 0;
-}
-
-void svc_midi(uint8_t status, uint8_t data1, uint8_t data2)
-{
-    if (!midi_mode || conn == BLE_HS_CONN_HANDLE_NONE) return;
-    uint32_t ms = svc_millis();
-    uint8_t packet[5] = {(uint8_t)(0x80 | ((ms >> 7) & 0x3F)), (uint8_t)(0x80 | (ms & 0x7F)), status, data1, data2};
-    notify(midi_handle, packet, sizeof(packet));
-}
 
 #define ENC_READ (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC)
 
@@ -241,11 +195,6 @@ static const struct ble_gatt_svc_def SERVICES[] = {
      .characteristics = (struct ble_gatt_chr_def[]){
          {.uuid = &U_BULK_RX.u, .access_cb = bulk_access, .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC},
          {.uuid = &U_BULK_TX.u, .access_cb = bulk_access, .val_handle = &bulk_tx_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
-         {0}}},
-    {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &U_MIDI.u,
-     .characteristics = (struct ble_gatt_chr_def[]){
-         {.uuid = &U_MIDI_IO.u, .access_cb = midi_access, .val_handle = &midi_handle,
-          .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY},
          {0}}},
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = BLE_UUID16_DECLARE(0x180A),
      .characteristics = (struct ble_gatt_chr_def[]){
@@ -327,20 +276,20 @@ static int bulk_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *c
 
 void gb_send(const char *json)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || midi_mode || !gb_seen) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !gb_seen) return;
     tx_push(nus_tx_handle, json, strlen(json), '\n', false);
 }
 
 /* The same, for a line that must not be lost behind a stream of bulk frames. */
 void gb_send_wait(const char *json)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || midi_mode || !gb_seen) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !gb_seen) return;
     tx_push(nus_tx_handle, json, strlen(json), '\n', true);
 }
 
 void ble_tx_bulk(const uint8_t *frame, size_t len, bool wait)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || midi_mode) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode) return;
     tx_push(bulk_tx_handle, frame, len, 0, wait);
 }
 
@@ -467,20 +416,18 @@ static int on_gap(struct ble_gap_event *ev, void *arg);
 
 static const char *persona_name(void)
 {
-    return keys_mode ? NAME_KEYS : (midi_mode ? NAME_MIDI : NAME_PHONE);
+    return keys_mode ? NAME_KEYS : NAME_PHONE;
 }
 
-/* Become one of the three devices: only its services are visible, and the
- * keyboard and the instrument each use their own address. */
+/* Become one of the two devices: only its services are visible, and the
+ * keyboard uses its own address. */
 static void apply_persona(void)
 {
     keys_mode = want_keys;
-    midi_mode = want_midi && !want_keys;
-    ble_gatts_svc_set_visibility(nus_svc, !keys_mode && !midi_mode);
-    ble_gatts_svc_set_visibility(bulk_svc, !keys_mode && !midi_mode);
+    ble_gatts_svc_set_visibility(nus_svc, !keys_mode);
+    ble_gatts_svc_set_visibility(bulk_svc, !keys_mode);
     ble_gatts_svc_set_visibility(hid_svc, keys_mode);
-    ble_gatts_svc_set_visibility(midi_svc, midi_mode);
-    if (keys_mode || midi_mode) ble_hs_id_set_rnd(keys_mode ? keys_addr : midi_addr);
+    if (keys_mode) ble_hs_id_set_rnd(keys_addr);
     ble_svc_gap_device_name_set(persona_name());
     ble_svc_gap_device_appearance_set(keys_mode ? APPEARANCE_KEYBOARD : APPEARANCE_WATCH);
 }
@@ -497,11 +444,6 @@ static void advertise(void)
     adv[n++] = 3, adv[n++] = 0x19, adv[n++] = (uint8_t)(appearance & 0xFF), adv[n++] = (uint8_t)(appearance >> 8);
     if (keys_mode) {
         adv[n++] = 3, adv[n++] = 0x03, adv[n++] = 0x12, adv[n++] = 0x18; /* HID service */
-    } else if (midi_mode) {
-        /* Music apps list devices that advertise the MIDI service. */
-        adv[n++] = 17, adv[n++] = 0x07;
-        memcpy(adv + n, U_MIDI.u128.value, 16);
-        n += 16;
     } else {
         /* Tells iPhones we would like their notification service. */
         adv[n++] = 17, adv[n++] = 0x15;
@@ -518,7 +460,7 @@ static void advertise(void)
 
     struct ble_gap_adv_params p = {.conn_mode = BLE_GAP_CONN_MODE_UND, .disc_mode = BLE_GAP_DISC_MODE_GEN,
                                    .itvl_min = 0x00A0, .itvl_max = 0x00F0};
-    uint8_t own = keys_mode || midi_mode ? BLE_OWN_ADDR_RANDOM : BLE_OWN_ADDR_PUBLIC;
+    uint8_t own = keys_mode ? BLE_OWN_ADDR_RANDOM : BLE_OWN_ADDR_PUBLIC;
     int rc = ble_gap_adv_start(own, NULL, BLE_HS_FOREVER, &p, on_gap, NULL);
     if (rc != 0) ESP_LOGW(TAG, "advertising failed: %d", rc);
     publish();
@@ -545,7 +487,7 @@ static int name_read(uint16_t c, const struct ble_gatt_error *err, struct ble_ga
 static void secure_cb(void *arg)
 {
     LV_UNUSED(arg);
-    if (conn == BLE_HS_CONN_HANDLE_NONE || encrypted || gb_seen || midi_mode) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || encrypted || gb_seen) return;
     ble_gap_security_initiate(conn);
 }
 
@@ -582,7 +524,7 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
         encrypted = true;
         link_encrypted(); /* the Orbit app's hello may be waiting for this */
         ble_gattc_read_by_uuid(conn, 1, 0xFFFF, BLE_UUID16_DECLARE(0x2A00), name_read, NULL);
-        if (!keys_mode && !midi_mode) apple_start(conn);
+        if (!keys_mode) apple_start(conn);
         break;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
@@ -631,10 +573,7 @@ static void on_sync(void)
 
     ble_gatts_find_svc(&U_NUS.u, &nus_svc);
     ble_gatts_find_svc(BLE_UUID16_DECLARE(0x1812), &hid_svc);
-    ble_gatts_find_svc(&U_MIDI.u, &midi_svc);
     ble_gatts_find_svc(&U_BULK.u, &bulk_svc);
-    memcpy(midi_addr, keys_addr, 6);
-    midi_addr[1] ^= 0xA5;
     synced = true;
     advertise();
 }
@@ -656,13 +595,6 @@ static void host_task(void *arg)
 
 static void switch_persona(void);
 
-void svc_link_midi_mode(bool on)
-{
-    want_midi = on;
-    if (on) want_keys = false;
-    switch_persona();
-}
-
 void svc_notif_reply(uint32_t id, const char *text)
 {
     if (!ble_phone_is_android()) return;
@@ -681,7 +613,6 @@ void svc_notif_reply(uint32_t id, const char *text)
 void svc_link_keys_mode(bool on)
 {
     want_keys = on;
-    if (on) want_midi = false;
     switch_persona();
 }
 
@@ -788,8 +719,6 @@ void ble_init(void)
     ble_uuid_from_str(&U_NUS_RX, "6e400002-b5a3-f393-e0a9-e50e24dcca9e");
     ble_uuid_from_str(&U_NUS_TX, "6e400003-b5a3-f393-e0a9-e50e24dcca9e");
     ble_uuid_from_str(&U_ANCS, "7905f431-b5ce-4e99-a40f-4b1e122d00d0");
-    ble_uuid_from_str(&U_MIDI, "03b80e5a-ede8-4b33-a751-6ce34ec4c700");
-    ble_uuid_from_str(&U_MIDI_IO, "7772e5db-3868-4112-a1a9-f2669d106bf3");
     ble_uuid_from_str(&U_BULK, "4f524249-5400-4c4e-8b00-000000000001");
     ble_uuid_from_str(&U_BULK_RX, "4f524249-5400-4c4e-8b00-000000000002");
     ble_uuid_from_str(&U_BULK_TX, "4f524249-5400-4c4e-8b00-000000000003");

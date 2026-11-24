@@ -213,11 +213,11 @@ static void list_layout(lv_obj_t *list, bool show_bar)
         lv_obj_t *row = lv_obj_get_child(list, (int32_t)i);
         lv_area_t ra;
         lv_obj_get_coords(row, &ra);
+        if (ra.y2 < la.y1 - 40 || ra.y1 > la.y2 + 40) continue;
         int d = LV_ABS((ra.y1 + ra.y2) / 2 - mid);
         if (d > SCR_C) d = SCR_C;
         int k = d * d * 100 / (SCR_C * SCR_C); /* 0 in the middle, 100 at the rim */
-        lv_obj_set_style_transform_width(row, -(k * 26 / 100), 0);
-        lv_obj_set_style_opa(row, (lv_opa_t)(255 - k * 170 / 100), 0);
+        lv_obj_set_style_text_opa(row, (lv_opa_t)(255 - k * 170 / 100), 0);
     }
     if (!bar) return;
     int above = lv_obj_get_scroll_top(list), below = lv_obj_get_scroll_bottom(list);

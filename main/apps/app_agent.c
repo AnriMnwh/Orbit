@@ -37,6 +37,7 @@ static uint16_t *frame;        /* SCR*SCR, RGB565 */
 static uint8_t *rows;          /* two horizontally upscaled rows, SCR*3 each */
 static lv_image_dsc_t frame_dsc;
 static int8_t sine[256];
+static uint16_t span_x0[SCR], span_x1[SCR];
 static bool listen_on_open;
 
 /* Eased towards the look of the current state, so changes glide. */
@@ -53,6 +54,12 @@ static bool agent_alloc(void)
     if (!field || !polar_r || !polar_a || !frame || !rows) return false;
 
     for (int i = 0; i < 256; i++) sine[i] = (int8_t)(127.0f * sinf(i * 6.2831853f / 256.0f));
+    for (int y = 0; y < SCR; y++) {
+        int dy = y - SCR_C;
+        int half = (int)sqrtf((float)(SCR_C * SCR_C - dy * dy)) + 1;
+        span_x0[y] = (uint16_t)(SCR_C - half < 0 ? 0 : SCR_C - half);
+        span_x1[y] = (uint16_t)(SCR_C + half > SCR ? SCR : SCR_C + half);
+    }
     /* Field cell (x, y) lands on panel pixel (4x, 4y), so the panel centre and
      * radius are both 233 / 4 cells. */
     const float c = SCR / 8.0f;
@@ -161,20 +168,17 @@ static void render_frame(void)
             stretch_row(field + (y0 + 1) * LO * 3, rb);
             have = y0;
         }
-        /* Only the part of the row inside the round panel is visible. */
-        int dy = y - SCR_C;
-        int half = (int)sqrtf((float)(SCR_C * SCR_C - dy * dy)) + 1;
-        int x0 = SCR_C - half < 0 ? 0 : SCR_C - half, x1 = SCR_C + half > SCR ? SCR : SCR_C + half;
+        int x0 = span_x0[y], x1 = span_x1[y];
         uint16_t *dst = frame + y * SCR;
         const uint8_t *pa = ra + x0 * 3, *pb = rb + x0 * 3;
         for (int x = x0; x < x1; x++, pa += 3, pb += 3) {
-            int r = (pa[0] * (4 - f) + pb[0] * f) >> 2;
-            int g = (pa[1] * (4 - f) + pb[1] * f) >> 2;
-            int b = (pa[2] * (4 - f) + pb[2] * f) >> 2;
-            if ((r | g | b) == 0) {
+            if ((pa[0] | pa[1] | pa[2] | pb[0] | pb[1] | pb[2]) == 0) {
                 dst[x] = 0;
                 continue;
             }
+            int r = (pa[0] * (4 - f) + pb[0] * f) >> 2;
+            int g = (pa[1] * (4 - f) + pb[1] * f) >> 2;
+            int b = (pa[2] * (4 - f) + pb[2] * f) >> 2;
             int n = bayer[y & 3][x & 3];
             r += n >> 1, g += n >> 2, b += n >> 1;
             if (r > 255) r = 255;

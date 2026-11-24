@@ -68,13 +68,6 @@ lv_obj_t *ui_time_text(lv_obj_t *screen);
 lv_obj_t *ui_list(lv_obj_t *parent);
 void ui_list_refresh(lv_obj_t *list);
 
-/* A full-screen picture painted by hand (ui/glow.c): fill the field, then
- * show it. The buffers die with the object. */
-#define GLOW_N 118 /* field cells per side; cell (x, y) lands on pixel (4x, 4y) */
-lv_obj_t *glow_create(lv_obj_t *parent);
-uint8_t *glow_field(lv_obj_t *glow); /* GLOW_N * GLOW_N * 3 bytes of RGB; NULL if memory ran out */
-void glow_show(lv_obj_t *glow);
-
 /* ------------------------------------------------------------------- shell */
 
 typedef struct app {
@@ -110,6 +103,7 @@ void shell_button(int button, int press);
 void shell_show_tile(int col, int row);
 void shell_rebuild_tiles(void);     /* after CFG.tiles changed */
 void shell_notification(const notif_t *n); /* open one notification in full */
+void settings_open_page(const char *page); /* jump straight to a Settings subpage */
 
 /* Something still running that earns a chip on the watch face. */
 typedef struct {
@@ -128,6 +122,7 @@ void shell_alert(const char *title, const char *text);
 void agent_listen_on_open(void);    /* next time the assistant opens, start listening */
 void timer_start(int seconds);
 const char *pet_command(const char *action); /* feed, play, wash, sleep, status */
+void pet_summary(int *health_pct, int *mood_out); /* 0..100 health, mood enum */
 
 /* Home tiles and overlays (each lives in its own file). */
 void watchface_create(lv_obj_t *tile);
@@ -139,16 +134,6 @@ void agenda_tile_create(lv_obj_t *tile);
 void alarm_get(char *text, size_t len, bool *on);
 void alarm_set_on(bool on);
 void duties_init(void); /* alarm and step history, running in the background */
-void zzz_init(void);    /* the ZZZ app's charge alert, running in the background */
-/* Watch faces that live with their apps. `home` marks the live face, which
- * stops moving while an app covers it. */
-void vision_face(lv_obj_t *root, bool ambient, bool home);
-void zzz_face(lv_obj_t *root, bool ambient, bool home);
-/* What those two apps hold, for the phone link. Setting emits EVT_GAME. */
-void vision_get(int *element, int *region);
-void vision_set(int element, int region);           /* below zero: leave that one alone */
-void zzz_get(int *charge, int64_t *full, int *done); /* full: UTC second it reaches 240, 0 if not counting */
-void zzz_set(int charge, int spend, int done);      /* charge or done below zero: leave it */
 /* One calendar entry as a card, added to a ui_list. */
 void agenda_card(lv_obj_t *list, const agenda_item_t *it, time_t now, uint32_t color);
 extern const app_t app_launcher;

@@ -82,6 +82,10 @@ static void page_title(const char *title)
 static lv_obj_t *row(const lv_image_dsc_t *icon, const char *label, const char *value, bool on, lv_event_cb_t cb, void *arg)
 {
     lv_obj_t *r = chip(72);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(r, 22, 0);
+    lv_obj_set_style_pad_column(r, 12, 0);
     if (cb) {
         lv_obj_set_style_bg_color(r, C_SURF2, LV_STATE_PRESSED);
         lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
@@ -89,23 +93,15 @@ static lv_obj_t *row(const lv_image_dsc_t *icon, const char *label, const char *
     } else {
         lv_obj_remove_flag(r, LV_OBJ_FLAG_CLICKABLE);
     }
-    int left = 26, right = 26;
-    if (icon) {
-        lv_obj_align(ui_icon(r, icon, on ? ui_accent() : C_DIM), LV_ALIGN_LEFT_MID, 22, 0);
-        left = 62;
-    }
+    if (icon) ui_icon(r, icon, on ? ui_accent() : C_DIM);
+    lv_obj_t *l = ui_label(r, label, F20, C_TEXT);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_flex_grow(l, 1);
     if (value && value[0]) {
         lv_obj_t *v = ui_label(r, value, F20, on ? ui_accent() : C_DIM);
         lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_style_max_width(v, 150, 0);
-        lv_obj_align(v, LV_ALIGN_RIGHT_MID, -24, 0);
-        lv_obj_update_layout(v);
-        right = lv_obj_get_width(v) + 36;
     }
-    lv_obj_t *l = ui_label(r, label, F20, C_TEXT);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_size(l, 344 - left - right, lv_font_get_line_height(F20));
-    lv_obj_align(l, LV_ALIGN_LEFT_MID, left, 0);
     return r;
 }
 
@@ -199,34 +195,48 @@ static void qr(const char *payload, int y)
 static void hotspot_toggle(lv_event_t *e)
 {
     LV_UNUSED(e);
-    svc_wifi_setup_mode(!S.wifi.setup_mode);
+    if (S.wifi.setup_mode) {
+        svc_wifi_setup_mode(false);
+        svc_web_enable(false);
+    } else {
+        svc_web_enable(true);
+        svc_wifi_setup_mode(true);
+    }
+}
+
+static void web_stop(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    svc_web_enable(false);
 }
 
 /* The phone route: a QR code that opens the setup page, where photos, keys,
  * the assistant and the camera are configured. */
 static void phone_page(void)
 {
-    char buf[96];
+    char buf[112];
     free_title("SET UP FROM PHONE", 34);
     if (S.wifi.setup_mode) {
+        if (!S.wifi.web_active) svc_web_enable(true);
         /* Phones offer to join the network in this code; the page then opens by itself. */
         snprintf(buf, sizeof(buf), "WIFI:T:WPA;S:Orbit-Setup;P:%s;;", S.wifi.setup_pass);
         qr(buf, 64);
-        free_text("Scan to join Orbit-Setup", F20, C_TEXT, 244);
-        snprintf(buf, sizeof(buf), "password %s", S.wifi.setup_pass);
-        free_text(buf, F16, C_DIM, 274);
-        lv_obj_align(ui_pill_btn(root, "Stop", C_SURF2, C_TEXT, hotspot_toggle, NULL), LV_ALIGN_BOTTOM_MID, 0, -58);
+        free_text("Scan to join Orbit-Setup", F20, C_TEXT, 240);
+        snprintf(buf, sizeof(buf), "Pass %s  " LV_SYMBOL_BULLET "  PIN %s", S.wifi.setup_pass, S.wifi.web_pin);
+        free_text(buf, F16, C_DIM, 270);
+        lv_obj_align(ui_pill_btn(root, "Stop", C_SURF2, C_TEXT, hotspot_toggle, NULL), LV_ALIGN_BOTTOM_MID, 0, -48);
     } else if (S.wifi.connected) {
-        snprintf(buf, sizeof(buf), "http://%s/", S.wifi.ip);
+        if (!S.wifi.web_active) svc_web_enable(true);
+        snprintf(buf, sizeof(buf), "http://%s/?pin=%s", S.wifi.ip, S.wifi.web_pin);
         qr(buf, 64);
-        free_text("Scan to open the setup page", F20, C_TEXT, 244);
-        snprintf(buf, sizeof(buf), "orbit.local  " LV_SYMBOL_BULLET "  %s", S.wifi.ip);
-        free_text(buf, F16, C_DIM, 274);
-        free_text("Photos, keys, assistant, camera, maps", F14, C_FAINT, 330);
+        free_text("Scan to open setup page", F20, C_TEXT, 240);
+        snprintf(buf, sizeof(buf), "orbit.local  " LV_SYMBOL_BULLET "  PIN %s", S.wifi.web_pin);
+        free_text(buf, F16, ui_accent(), 270);
+        lv_obj_align(ui_pill_btn(root, "Stop page", C_SURF2, C_TEXT, web_stop, NULL), LV_ALIGN_BOTTOM_MID, 0, -48);
     } else {
         lv_obj_align(ui_icon(root, &ic_phone_48, C_FAINT), LV_ALIGN_TOP_MID, 0, 92);
         free_text("No Wi-Fi yet", F28, C_TEXT, 156);
-        free_text("The watch can host its own hotspot so your phone can set it up.", F20, C_DIM, 200);
+        free_text("Start a temporary hotspot or turn on Wi-Fi to set up from your phone.", F20, C_DIM, 200);
         lv_obj_align(ui_pill_btn(root, "Start hotspot", ui_accent(), lv_color_black(), hotspot_toggle, NULL),
                      LV_ALIGN_BOTTOM_MID, 0, -58);
     }
@@ -396,10 +406,7 @@ static void wifi_page(void)
 static void bt_mode(lv_event_t *e)
 {
     LV_UNUSED(e);
-    /* Phone -> keyboard -> instrument -> phone */
-    if (S.link.keys_mode) svc_link_midi_mode(true);
-    else if (S.link.midi_mode) svc_link_midi_mode(false);
-    else svc_link_keys_mode(true);
+    svc_link_keys_mode(!S.link.keys_mode);
 }
 
 static void bt_forget_yes(lv_event_t *e)
@@ -418,15 +425,14 @@ static void bt_forget(lv_event_t *e)
 static void bt_page(void)
 {
     bool up = S.link.status == LINK_CONNECTED;
-    const char *mode = S.link.keys_mode ? "Keyboard" : (S.link.midi_mode ? "MIDI" : "Phone");
+    const char *mode = S.link.keys_mode ? "Keyboard" : "Phone";
     page_title("Bluetooth");
     row(&ic_bluetooth_28, up ? (S.link.name[0] ? S.link.name : "Connected") : "Not connected", up ? "On" : "Waiting", up, NULL,
         NULL);
     row(&ic_link_28, "Act as", mode, true, bt_mode, NULL);
     row(&ic_trash_28, "Forget devices", NULL, false, bt_forget, NULL);
-    note(S.link.keys_mode   ? "Pair \"Orbit Keys\" in your computer's Bluetooth settings."
-         : S.link.midi_mode ? "Pair \"Orbit MIDI\" from your music app."
-                            : "iPhone: pair \"Orbit\" in Bluetooth settings.\nAndroid: add it in Gadgetbridge.");
+    note(S.link.keys_mode ? "Pair \"Orbit Keys\" in your computer's Bluetooth settings."
+                          : "iPhone: pair \"Orbit\" in Bluetooth settings.\nAndroid: add it in Gadgetbridge.");
 }
 
 static void connectivity_page(void)
@@ -442,9 +448,9 @@ static void connectivity_page(void)
 
 static const uint8_t TIMEOUTS[] = {8, 12, 20, 30, 60};
 static const char *const AOD_NAMES[AOD_COUNT] = {"Off", "Clock", "Photos"};
-static const char *const FACE_NAMES[FACE_COUNT] = {"Digital", "Analog", "Photo", "Vision", "TV wall"};
+static const char *const FACE_NAMES[FACE_COUNT] = {"Digital", "Analog", "Modular", "Photo"};
 static const char *const ACCENT_NAMES[ACCENT_COUNT] = {"Sky", "Mint", "Rose", "Violet", "Peach", "Sun"};
-static const char *const COMP_NAMES[COMP_COUNT] = {"Battery", "Steps", "Weather", "Day", "None"};
+static const char *const COMP_NAMES[COMP_COUNT] = {"Battery", "Steps", "Weather", "Day", "Pet", "Agenda", "None"};
 static const char *const TILE_NAMES[TILE_KINDS] = {"", "Music", "Activity", "Weather", "Timer", "Alarm", "Pet", "Agenda"};
 
 static void brightness_changed(lv_event_t *e)
@@ -560,6 +566,7 @@ static void display_page(void)
     row(NULL, "Left ring", COMP_NAMES[CFG.comp_left], true, cycle_left, NULL);
     row(NULL, "Right ring", COMP_NAMES[CFG.comp_right], true, cycle_right, NULL);
     row(&ic_spark_28, "Accent colour", ACCENT_NAMES[CFG.accent % ACCENT_COUNT], true, cycle_accent, NULL);
+    row(&ic_grid_28, "Grid launcher", on_off(CFG.grid_launcher), CFG.grid_launcher, toggle, &CFG.grid_launcher);
     row(&ic_grid_28, "Tiles", NULL, false, open_page, (void *)tiles_page);
 }
 
@@ -956,7 +963,7 @@ static void wz_phone_kind(lv_event_t *e)
 static void wz_phone(void)
 {
     lv_color_t c = lv_color_hex(0x4ADE9B);
-    if (S.link.status == LINK_CONNECTED && !S.link.keys_mode && !S.link.midi_mode) {
+    if (S.link.status == LINK_CONNECTED && !S.link.keys_mode) {
         wz_frame(&ic_check_48, C_GOOD, "Phone connected", S.link.name[0] ? S.link.name : "Notifications and music are on their way.");
         wz_button("Next", true, -70, wizard_next, NULL);
         return;
@@ -1090,11 +1097,31 @@ static void begin(lv_obj_t *scr)
     bus_watch(scr, on_event, NULL);
 }
 
+static page_fn pending_page;
+
+void settings_open_page(const char *page)
+{
+    if (!page) pending_page = NULL;
+    else if (strcmp(page, "wifi") == 0) pending_page = wifi_page;
+    else if (strcmp(page, "bt") == 0) pending_page = bt_page;
+    else if (strcmp(page, "display") == 0) pending_page = display_page;
+    else if (strcmp(page, "sound") == 0) pending_page = sound_page;
+    else if (strcmp(page, "battery") == 0) pending_page = battery_page;
+    else if (strcmp(page, "tiles") == 0) pending_page = tiles_page;
+    else pending_page = NULL;
+    shell_open(&app_settings);
+}
+
 static void settings_create(lv_obj_t *scr)
 {
     begin(scr);
     wizard = -1;
     push(root_page);
+    if (pending_page) {
+        page_fn p = pending_page;
+        pending_page = NULL;
+        push(p);
+    }
 }
 
 static void welcome_create(lv_obj_t *scr)

@@ -33,6 +33,7 @@ static const app_t *recents[RECENTS];
 
 static lv_obj_t *rest_scr; /* always-on or dark screen while resting */
 static uint32_t rest_since;
+static lv_timer_t *tick_timer;
 
 static lv_obj_t *overlay; /* at most one takeover overlay at a time */
 static lv_obj_t *lock_veil;
@@ -70,6 +71,8 @@ void shell_rest(void)
     lv_obj_add_event_cb(rest_scr, rest_touched, LV_EVENT_PRESSED, NULL);
     lv_screen_load(rest_scr);
     svc_brightness(lit ? AOD_BRIGHTNESS : 0);
+    svc_display_active(false);
+    if (tick_timer) lv_timer_set_period(tick_timer, 1000);
     rest_since = svc_millis();
     bus_emit(EVT_DISPLAY, NULL);
 }
@@ -90,6 +93,8 @@ void shell_wake(void)
     if (rest_scr) lv_obj_delete_async(rest_scr);
     rest_scr = NULL;
     svc_brightness(active_brightness());
+    svc_display_active(true);
+    if (tick_timer) lv_timer_set_period(tick_timer, 250);
     bus_emit(EVT_DISPLAY, NULL);
 }
 
@@ -160,6 +165,7 @@ void shell_open(const app_t *app)
     lv_obj_remove_flag(pager, LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scrollbar_mode(pager, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_snap_x(pager, LV_SCROLL_SNAP_START);
+    lv_obj_set_style_anim_duration(pager, 180, 0);
     /* Apps that use swipes themselves are closed with the button instead. */
     lv_obj_set_scroll_dir(pager, app->own_gestures ? LV_DIR_NONE : LV_DIR_HOR);
 
@@ -619,6 +625,7 @@ static void build_tiles(void)
     lv_obj_remove_style_all(tiles);
     lv_obj_set_size(tiles, SCR, SCR);
     lv_obj_set_scrollbar_mode(tiles, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_anim_duration(tiles, 180, 0);
     lv_obj_move_to_index(tiles, 0); /* behind any open app */
 
     int n = 0;
@@ -709,7 +716,7 @@ void shell_init(void)
     S.display = DISPLAY_ACTIVE;
     svc_brightness(active_brightness());
     bus_watch(home_scr, on_event, NULL);
-    lv_timer_create(tick, 250, NULL);
+    tick_timer = lv_timer_create(tick, 250, NULL);
     boot_animation();
 }
 
@@ -722,6 +729,5 @@ void orbit_boot(void)
     settings_load();
     macros_load();
     duties_init(); /* restores alarm and step state before the UI reads it */
-    zzz_init();
     shell_init();
 }

@@ -10,8 +10,6 @@
  *   act      today's step count, for the phone to keep a history
  *   replies  the quick replies offered under a notification
  *   phone    the phone's own battery
- *   vision   the Vision app's element and region
- *   zzz      the ZZZ app's battery charge and errands
  *
  * Lines arrive on Bluetooth's task. Anything that touches `S`, `CFG` or the
  * saved settings is handed to the LVGL thread; a photo is written to flash by
@@ -265,51 +263,35 @@ static void phone_message(cJSON *msg)
  * Everything in this block runs on the LVGL thread. */
 
 static bool watching, act_due;
-static char cfg_sent[224]; /* the last settings line the phone was given */
-static char vision_sent[48], zzz_sent[40];
+static char cfg_sent[384]; /* the last settings line the phone was given */
 
 static void cfg_send(void)
 {
     if (!link_has(LINK_CAP_CFG)) return;
-    char line[224];
+    char faces[32] = "[", styles[32] = "[";
+    int fn = 0;
+    for (int i = 0; i < FACE_COUNT; i++) {
+        if (CFG.face_order[i] < FACE_COUNT) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%s%d", fn++ ? "," : "", CFG.face_order[i]);
+            strlcat(faces, buf, sizeof(faces));
+        }
+        char sbuf[8];
+        snprintf(sbuf, sizeof(sbuf), "%s%d", i ? "," : "", CFG.face_style[i]);
+        strlcat(styles, sbuf, sizeof(styles));
+    }
+    strlcat(faces, "]", sizeof(faces));
+    strlcat(styles, "]", sizeof(styles));
+
+    char line[384];
     snprintf(line, sizeof(line),
-             "{\"t\":\"cfg\",\"brightness\":%d,\"dnd\":%s,\"h24\":%s,\"raise\":%s,\"sound\":%s,\"aod\":%d,\"timeout\":%d,\"goal\":%d,"
-             "\"face\":%d,\"accent\":%d}",
+             "{\"t\":\"cfg\",\"brightness\":%d,\"dnd\":%s,\"h24\":%s,\"raise\":%s,\"sound\":%s,\"aod\":%d,\"timeout\":%d,"
+             "\"goal\":%d,\"face\":%d,\"accent\":%d,\"compL\":%d,\"compR\":%d,\"grid\":%s,\"faces\":%s,\"styles\":%s}",
              CFG.brightness, CFG.dnd ? "true" : "false", CFG.clock_24h ? "true" : "false", CFG.raise_to_wake ? "true" : "false",
-             CFG.sound ? "true" : "false", CFG.aod_mode, CFG.timeout_s, CFG.step_goal, CFG.face, CFG.accent);
+             CFG.sound ? "true" : "false", CFG.aod_mode, CFG.timeout_s, CFG.step_goal, CFG.face, CFG.accent, CFG.comp_left,
+             CFG.comp_right, CFG.grid_launcher ? "true" : "false", faces, styles);
     if (strcmp(line, cfg_sent) == 0) return; /* some other setting changed */
     strlcpy(cfg_sent, line, sizeof(cfg_sent));
-    gb_send(line);
-}
-
-/* The Vision's element and region. Sent only when they differ from what the
- * phone was last told. */
-static void vision_send(void)
-{
-    if (!link_has(LINK_CAP_VISION)) return;
-    int element, region;
-    vision_get(&element, &region);
-    char line[48];
-    snprintf(line, sizeof(line), "{\"t\":\"vision\",\"el\":%d,\"region\":%d}", element & 15, region & 15);
-    if (strcmp(line, vision_sent) == 0) return;
-    strlcpy(vision_sent, line, sizeof(vision_sent));
-    gb_send(line);
-}
-
-/* The ZZZ battery charge. The phone counts it up by itself from `full`, so a
- * line goes out only when that moment or the errands change, not every time
- * the charge gains a point. */
-static void zzz_send(void)
-{
-    if (!link_has(LINK_CAP_ZZZ)) return;
-    int charge, done;
-    int64_t full;
-    zzz_get(&charge, &full, &done);
-    char key[40], line[96];
-    snprintf(key, sizeof(key), "%lld/%d", (long long)full, done & 15);
-    if (strcmp(key, zzz_sent) == 0) return;
-    strlcpy(zzz_sent, key, sizeof(zzz_sent));
-    snprintf(line, sizeof(line), "{\"t\":\"zzz\",\"charge\":%d,\"full\":%lld,\"done\":%d}", charge & 255, (long long)full, done & 15);
     gb_send(line);
 }
 
@@ -329,15 +311,23 @@ static void act_send(void)
     act_due = false;
 }
 
+void more_ota_notify(void)
+{
+    if (!link_app() || !ble_encrypted() || !web_update_window_open()) return;
+    const char *ip = S.wifi.setup_mode ? "192.168.4.1" : (S.wifi.connected ? S.wifi.ip : "");
+    char line[96];
+    snprintf(line, sizeof(line), "{\"t\":\"ota\",\"ip\":\"%s\",\"pin\":\"%s\",\"window\":300}", ip, web_pin_get());
+    gb_send(line);
+}
+
 static void on_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
     if (e == EVT_SETTINGS) {
         cfg_send();
-    } else if (e == EVT_GAME) {
-        vision_send();
-        zzz_send();
+    } else if (e == EVT_WIFI) {
+        if (web_update_window_open()) more_ota_notify();
     } else if (e == EVT_MINUTE) {
         /* Steps go out on the hour, and once more just before the count
          * starts again at midnight so the phone has the day's total. */
@@ -358,10 +348,8 @@ static void start(void *arg)
         bus_watch(lv_layer_top(), on_event, NULL);
         watching = true;
     }
-    cfg_sent[0] = 0, vision_sent[0] = 0, zzz_sent[0] = 0;
+    cfg_sent[0] = 0;
     cfg_send();
-    vision_send();
-    zzz_send();
     act_due = true;
     act_send();
 }
@@ -369,6 +357,8 @@ static void start(void *arg)
 typedef struct {
     char key[12];
     int value;
+    uint8_t arr[FACE_COUNT];
+    int arr_len;
 } cfg_msg_t;
 
 static int within(int v, int lo, int hi)
@@ -392,7 +382,32 @@ static void cfg_apply(void *arg)
     else if (strcmp(k, "goal") == 0) CFG.step_goal = (uint16_t)within(v, 1000, 60000);
     else if (strcmp(k, "face") == 0) CFG.face = (uint8_t)within(v, 0, FACE_COUNT - 1);
     else if (strcmp(k, "accent") == 0) CFG.accent = (uint8_t)within(v, 0, ACCENT_COUNT - 1);
-    else known = false;
+    else if (strcmp(k, "compL") == 0) CFG.comp_left = (uint8_t)within(v, 0, COMP_COUNT - 1);
+    else if (strcmp(k, "compR") == 0) CFG.comp_right = (uint8_t)within(v, 0, COMP_COUNT - 1);
+    else if (strcmp(k, "grid") == 0) CFG.grid_launcher = v != 0;
+    else if (strcmp(k, "faces") == 0) {
+        uint8_t seen = 0, packed[FACE_COUNT];
+        int count = 0;
+        for (int i = 0; i < m->arr_len && i < FACE_COUNT; i++) {
+            uint8_t f = m->arr[i];
+            if (f < FACE_COUNT && !(seen & (1u << f))) {
+                seen |= (uint8_t)(1u << f);
+                packed[count++] = f;
+            }
+        }
+        if (count > 0) {
+            for (int i = 0; i < FACE_COUNT; i++) CFG.face_order[i] = i < count ? packed[i] : 0xFF;
+            bool vis = false;
+            for (int i = 0; i < count; i++) {
+                if (CFG.face_order[i] == CFG.face) vis = true;
+            }
+            if (!vis) CFG.face = CFG.face_order[0];
+        } else {
+            known = false;
+        }
+    } else if (strcmp(k, "styles") == 0) {
+        for (int i = 0; i < m->arr_len && i < FACE_COUNT; i++) CFG.face_style[i] = (uint8_t)within(m->arr[i], 0, 2);
+    } else known = false;
     free(m);
     /* The phone already shows what it asked for, so it is always told what
      * the watch ended up with, even when that is no change at all. */
@@ -406,49 +421,24 @@ static void cfg_message(cJSON *msg)
 {
     cJSON *v;
     cJSON_ArrayForEach(v, cJSON_GetObjectItem(msg, "set")) {
-        if (!v->string || !(cJSON_IsBool(v) || cJSON_IsNumber(v))) continue;
-        cfg_msg_t *m = calloc(1, sizeof(*m));
-        if (!m) return;
-        strlcpy(m->key, v->string, sizeof(m->key));
-        m->value = cJSON_IsBool(v) ? cJSON_IsTrue(v) : (int)lround(v->valuedouble);
-        ui_post(cfg_apply, m);
+        if (!v->string) continue;
+        if (cJSON_IsArray(v)) {
+            cfg_msg_t *m = calloc(1, sizeof(*m));
+            if (!m) return;
+            strlcpy(m->key, v->string, sizeof(m->key));
+            cJSON *item;
+            cJSON_ArrayForEach(item, v) {
+                if (m->arr_len < FACE_COUNT && cJSON_IsNumber(item)) m->arr[m->arr_len++] = (uint8_t)item->valueint;
+            }
+            ui_post(cfg_apply, m);
+        } else if (cJSON_IsBool(v) || cJSON_IsNumber(v)) {
+            cfg_msg_t *m = calloc(1, sizeof(*m));
+            if (!m) return;
+            strlcpy(m->key, v->string, sizeof(m->key));
+            m->value = cJSON_IsBool(v) ? cJSON_IsTrue(v) : (int)lround(v->valuedouble);
+            ui_post(cfg_apply, m);
+        }
     }
-}
-
-/* Vision and ZZZ, set from the phone. As with settings, the phone is always
- * told where things ended up, even when nothing changed. */
-typedef struct {
-    int a, b, c;
-} set_msg_t;
-
-static void vision_apply(void *arg)
-{
-    set_msg_t *m = arg;
-    vision_sent[0] = 0;
-    vision_set(m->a, m->b); /* a change goes out through EVT_GAME */
-    vision_send();          /* no change: this is the answer */
-    free(m);
-}
-
-static void zzz_apply(void *arg)
-{
-    set_msg_t *m = arg;
-    zzz_sent[0] = 0;
-    zzz_set(m->a, m->b, m->c);
-    zzz_send();
-    free(m);
-}
-
-/* On Bluetooth's task. */
-static void set_message(cJSON *msg, bool zzz)
-{
-    cJSON *set = cJSON_GetObjectItem(msg, "set");
-    if (!cJSON_IsObject(set)) return;
-    set_msg_t *m = calloc(1, sizeof(*m));
-    if (!m) return;
-    if (zzz) m->a = (int)num(set, "charge", -1), m->b = (int)num(set, "spend", 0), m->c = (int)num(set, "done", -1);
-    else m->a = (int)num(set, "el", -1), m->b = (int)num(set, "region", -1);
-    ui_post(zzz ? zzz_apply : vision_apply, m);
 }
 
 void more_hello(void)
@@ -459,7 +449,7 @@ void more_hello(void)
 void more_gone(void)
 {
     S.phone.known = false;
-    cfg_sent[0] = 0, vision_sent[0] = 0, zzz_sent[0] = 0;
+    cfg_sent[0] = 0;
     act_due = false;
     bus_emit(EVT_LINK, NULL);
 }
@@ -531,8 +521,6 @@ bool more_handle(const char *type, cJSON *msg)
     else if (strcmp(type, "agenda") == 0) agenda_message(msg);
     else if (strcmp(type, "busy") == 0) busy_message(msg);
     else if (strcmp(type, "day") == 0) day_message(msg);
-    else if (strcmp(type, "vision") == 0) set_message(msg, false);
-    else if (strcmp(type, "zzz") == 0) set_message(msg, true);
     else if (strcmp(type, "replies") == 0) replies_message(msg);
     else if (strcmp(type, "phone") == 0) phone_message(msg);
     else if (strcmp(type, "cfg") == 0) cfg_message(msg);

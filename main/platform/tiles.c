@@ -250,6 +250,7 @@ static void worker(void *arg)
                 free(png);
             }
             job.next++, job.done++;
+            if (job.next >= job.total) net_release(NET_NEED_TILES);
         }
         if (downloaded) vTaskDelay(pdMS_TO_TICKS(250)); /* be gentle with the tile server */
     }
@@ -295,6 +296,7 @@ int tiles_preload(double lat, double lon)
     job.lat = lat, job.lon = lon;
     job.next = 0, job.done = 0;
     job.total = 9 + 9 + 25 + 25 + 25;
+    net_acquire(NET_NEED_TILES);
     worker_start();
     return job.total;
 }

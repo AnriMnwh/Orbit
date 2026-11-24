@@ -87,7 +87,7 @@ void notif_clear(void)
 
 /* ---------------------------------------------------------------- settings */
 
-#define CFG_VERSION 5
+#define CFG_VERSION 6
 
 settings_t CFG;
 
@@ -112,6 +112,9 @@ static void settings_defaults(void)
         .volume = 70,
         .previews = 1,
         .step_goal = 8000,
+        .face_order = {FACE_DIGITAL, FACE_ANALOG, FACE_MODULAR, FACE_PHOTO},
+        .face_style = {0, 0, 0, 0},
+        .grid_launcher = 0,
     };
 }
 
@@ -129,6 +132,27 @@ void settings_load(void)
     for (int i = 0; i < TILE_SLOTS; i++) {
         if (CFG.tiles[i] >= TILE_KINDS) CFG.tiles[i] = TILE_NONE;
     }
+    /* Validate face_order: keep unique valid faces packed at the front. */
+    uint8_t seen = 0, packed[FACE_COUNT];
+    int count = 0;
+    for (int i = 0; i < FACE_COUNT; i++) {
+        uint8_t f = CFG.face_order[i];
+        if (f < FACE_COUNT && !(seen & (1u << f))) {
+            seen |= (uint8_t)(1u << f);
+            packed[count++] = f;
+        }
+        if (CFG.face_style[i] > 2) CFG.face_style[i] = 0;
+    }
+    if (count == 0) {
+        for (int i = 0; i < FACE_COUNT; i++) packed[i] = (uint8_t)i;
+        count = FACE_COUNT;
+    }
+    for (int i = 0; i < FACE_COUNT; i++) CFG.face_order[i] = i < count ? packed[i] : 0xFF;
+    bool face_visible = false;
+    for (int i = 0; i < count; i++) {
+        if (CFG.face_order[i] == CFG.face) face_visible = true;
+    }
+    if (!face_visible) CFG.face = CFG.face_order[0];
     svc_charge_limit(CFG.charge_limit != 0);
 }
 

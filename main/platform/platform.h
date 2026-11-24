@@ -43,7 +43,13 @@ int16_t *audio_record_stop(size_t *samples);
 float audio_level(void); /* 0..1, current microphone or speaker loudness */
 
 /* --- net.c --- */
+enum {
+    NET_NEED_SETUP = 1, NET_NEED_MANUAL = 2, NET_NEED_CAMERA = 4,
+    NET_NEED_AGENT = 8, NET_NEED_TILES = 16, NET_NEED_NTP = 32,
+};
 void net_init(void);
+void net_acquire(uint8_t reason);
+void net_release(uint8_t reason);
 bool net_online(void);
 /* Leaves the home network for the camera's own Wi-Fi and back again. */
 bool net_join_camera(const char *ssid, const char *password);
@@ -53,7 +59,10 @@ void net_secret_set(const char *key, const char *value);
 void net_rejoin(void); /* after the saved home network changed */
 
 /* --- web.c --- */
-void web_start(void);
+void web_enable(bool on);
+const char *web_pin_get(void);
+bool web_is_active(void);
+bool web_update_window_open(void);
 
 /* --- ble*.c --- */
 void ble_init(void);
@@ -96,8 +105,7 @@ void link_agent_cancel(void);
 bool jpeg_to_rgb565(const uint8_t *jpg, size_t len, int w, int h, uint16_t *out);
 /* What the app's hello offered that the watch only uses when asked to. */
 enum {
-    LINK_CAP_AGENT = 1, LINK_CAP_CFG = 2, LINK_CAP_ACT = 4, LINK_CAP_VISION = 8,
-    LINK_CAP_ZZZ = 16, LINK_CAP_BUSY = 32, LINK_CAP_DAY = 64,
+    LINK_CAP_AGENT = 1, LINK_CAP_CFG = 2, LINK_CAP_ACT = 4, LINK_CAP_BUSY = 8, LINK_CAP_DAY = 16,
 };
 bool link_has(int cap);
 uint32_t link_crc32(const uint8_t *p, size_t n); /* the zlib one */
@@ -113,6 +121,7 @@ void more_gone(void);   /* the app went away (LVGL thread) */
 /* A whole photo has arrived. Takes ownership of `jpg`. */
 void more_photo(uint8_t *jpg, size_t len, uint32_t crc, const char *key);
 bool more_photo_busy(void);
+void more_ota_notify(void);
 
 /* --- agent.c, used by link.c --- */
 const char *agent_tools_json(void);

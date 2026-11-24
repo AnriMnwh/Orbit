@@ -22,11 +22,9 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.util.Log
-import com.anari.orbit.link.BatteryCharge
 import com.anari.orbit.link.Link
 import com.anari.orbit.link.Messages
 import com.anari.orbit.link.StepLog
-import com.anari.orbit.link.VisionChoice
 import com.anari.orbit.link.WatchConfig
 import com.anari.orbit.link.WatchLink
 import kotlinx.coroutines.CoroutineScope
@@ -146,17 +144,9 @@ class LinkService : Service(), WatchLink.Events {
     /** Changes one of the watch's own settings, and shows the change at once on the phone. */
     fun configure(key: String, value: Any) {
         send(Messages.configure(key, value))
-        Hub.state.update { it.copy(config = (it.config ?: WatchConfig()).merge(JSONObject().put(key, value))) }
+        val jsonVal = if (value is Collection<*>) org.json.JSONArray(value) else value
+        Hub.state.update { it.copy(config = (it.config ?: WatchConfig()).merge(JSONObject().put(key, jsonVal))) }
     }
-
-    /** Changes the gem on the Vision face, showing the change at once; the watch answers with what it now shows. */
-    fun setVision(key: String, value: Int) {
-        send(Messages.vision(key, value))
-        Hub.state.update { it.copy(vision = (it.vision ?: VisionChoice()).merge(JSONObject().put(key, value))) }
-    }
-
-    /** Changes the Battery Charge tracker; the watch answers with the new count. */
-    fun setBatteryCharge(key: String, value: Int) = send(Messages.zzz(key, value))
 
     /** A photo was added or removed on the phone; bring the watch up to date. */
     fun photosChanged() {
@@ -186,7 +176,7 @@ class LinkService : Service(), WatchLink.Events {
         photos.stop()
         ring(false)
         locate(false)
-        Hub.state.update { it.copy(connected = false, orbitLink = false, assistant = "", caps = emptySet()) }
+        Hub.state.update { it.copy(connected = false, orbitLink = false, assistant = "", caps = emptySet(), ota = null) }
         showStatus(R.string.link_waiting)
     }
 
@@ -228,8 +218,15 @@ class LinkService : Service(), WatchLink.Events {
                 Hub.state.update { it.copy(config = (it.config ?: WatchConfig()).merge(json)) }
                 Hub.state.value.config?.let { if (settings.accent != it.accent) settings.accent = it.accent }
             }
-            "vision" -> Hub.state.update { it.copy(vision = (it.vision ?: VisionChoice()).merge(json)) }
-            "zzz" -> Hub.state.update { it.copy(batteryCharge = BatteryCharge.from(json)) }
+            "ota" -> {
+                val windowMs = json.optInt("window", 300).coerceIn(30, 1800) * 1000L
+                val ready = OtaReady(
+                    ip = json.optString("ip"),
+                    pin = json.optString("pin"),
+                    expiresAtMs = System.currentTimeMillis() + windowMs,
+                )
+                Hub.state.update { it.copy(ota = ready) }
+            }
             // The watch's calendar was paged to a month it holds no dots for.
             "busy" -> runCatching { YearMonth.parse(json.optString("month")) }.getOrNull()?.let(daily::sendBusy)
             // A day in the watch's month view was tapped.

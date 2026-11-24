@@ -37,7 +37,7 @@ object Link {
 
     val CAPS = listOf(
         "art", "music2", "agent", "photos", "agenda", "place", "cfg", "act", "replies", "phone",
-        "vision", "zzz", "busy", "day",
+        "busy", "day",
     )
 
     /** One message to the watch, wrapped the way Gadgetbridge wraps it. */

@@ -424,16 +424,25 @@ static void imu_poll(void)
 
 /* ------------------------------------------------------------ input task */
 
+static volatile bool display_active = true;
+
+void svc_display_active(bool active)
+{
+    display_active = active;
+}
+
 static void inputs_task(void *arg)
 {
     LV_UNUSED(arg);
     int held_ms = 0, since_tap_ms = -1; /* -1: no tap waiting to be reported */
     bool long_sent = false;
     for (uint32_t n = 1;; n++) {
-        vTaskDelay(pdMS_TO_TICKS(20));
+        bool want_raise = CFG.raise_to_wake && !CFG.saver && !CFG.bedtime && !S.theatre;
+        int delay_ms = display_active ? 20 : (want_raise ? 100 : 200);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
 
         if (gpio_get_level(SIDE_BUTTON) == 0) {
-            held_ms += 20;
+            held_ms += delay_ms;
             if (held_ms >= 600 && !long_sent) {
                 long_sent = true;
                 since_tap_ms = -1;
@@ -448,7 +457,7 @@ static void inputs_task(void *arg)
             }
             held_ms = 0, long_sent = false;
         }
-        if (since_tap_ms >= 0 && held_ms == 0 && (since_tap_ms += 20) > 300) {
+        if (since_tap_ms >= 0 && held_ms == 0 && (since_tap_ms += delay_ms) > 300) {
             button_post(BTN_SIDE, PRESS_SHORT);
             since_tap_ms = -1;
         }
@@ -456,9 +465,11 @@ static void inputs_task(void *arg)
             charge_limit_dirty = false;
             battery_read();
         }
-        if (pmic && n % 8 == 0) pmic_poll();
-        if (pmic && n % 500 == 0) battery_read();
-        if (have_imu && n % 2 == 0) imu_poll();
+        uint32_t pmic_div = display_active ? 8u : (want_raise ? 5u : 3u);
+        uint32_t batt_div = display_active ? 500u : (want_raise ? 300u : 150u);
+        if (pmic && n % pmic_div == 0) pmic_poll();
+        if (pmic && n % batt_div == 0) battery_read();
+        if (have_imu && (display_active ? (n % 2 == 0) : want_raise)) imu_poll();
     }
 }
 
@@ -474,7 +485,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    esp_pm_config_t pm = {.max_freq_mhz = 240, .min_freq_mhz = 80, .light_sleep_enable = false};
+    esp_pm_config_t pm = {.max_freq_mhz = 240, .min_freq_mhz = 40, .light_sleep_enable = true};
     esp_pm_configure(&pm);
 
     bsp_display_cfg_t cfg = {
@@ -484,10 +495,20 @@ void app_main(void)
         .touch_flags = {.swap_xy = 0, .mirror_x = 1, .mirror_y = 1},
     };
     cfg.lv_adapter_cfg.task_stack_size = 14 * 1024; /* the UI draws a lot by hand */
+    cfg.lv_adapter_cfg.task_core_id = 1;            /* keep UI rendering off Core 0 radio ISRs */
     if (!bsp_display_start_with_config(&cfg)) {
         ESP_LOGE(TAG, "display failed to start");
         return;
     }
+
+    bsp_display_lock(-1);
+    for (lv_indev_t *indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            lv_indev_set_scroll_throw(indev, 14);
+            lv_indev_set_scroll_limit(indev, 6);
+        }
+    }
+    bsp_display_unlock();
 
     pmic_init();
     rtc = i2c_attach(PCF85063_ADDR, "clock chip (PCF85063)");
@@ -513,7 +534,6 @@ void app_main(void)
 
     audio_init();
     net_init();
-    web_start();
     ble_init();
     tiles_init();
     lumix_init();

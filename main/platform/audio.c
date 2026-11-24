@@ -18,7 +18,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
-#include "../core/synth.h"
 #include "platform.h"
 
 static const char *TAG = "audio";
@@ -213,123 +212,6 @@ void svc_sound(int id)
     if (sounds && !recording) xQueueSend(sounds, &id, 0);
 }
 
-/* ------------------------------------------------------------------ synth */
-
-static volatile bool synth_on;
-static TaskHandle_t synth_handle;
-
-/* Renders the synth engine straight to the speaker in small blocks for as
- * long as an app asks for it. */
-static void synth_task(void *arg)
-{
-    LV_UNUSED(arg);
-    static int16_t mono[256], stereo[512];
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        xSemaphoreTake(bus_lock, portMAX_DELAY);
-        if (synth_on && bus_open(SYNTH_RATE)) {
-            while (synth_on) {
-                synth_render(mono, 256);
-                for (int i = 0; i < 256; i++) stereo[2 * i] = stereo[2 * i + 1] = mono[i];
-                esp_codec_dev_write(spk, stereo, sizeof(stereo));
-            }
-            bus_close();
-        }
-        xSemaphoreGive(bus_lock);
-    }
-}
-
-void svc_synth(bool on)
-{
-    synth_on = on;
-    if (on && synth_handle) xTaskNotifyGive(synth_handle);
-}
-
-/* ------------------------------------------------------------------ tuner */
-
-#define TUNE_WINDOW 1024
-#define TUNE_MAX_LAG 300 /* 16 kHz / 300 = 53 Hz, below a bass guitar's low E */
-#define TUNE_MIN_LAG 12  /* about 1300 Hz */
-
-static volatile bool tuner_on;
-static TaskHandle_t tuner_handle;
-
-static void tuner_apply(void *arg)
-{
-    float hz = (float)(uintptr_t)arg / 100.0f;
-    S.tuner.valid = hz > 0;
-    S.tuner.hz = hz;
-    bus_emit(EVT_TUNER, NULL);
-}
-
-/* The YIN method: find the shortest delay at which the wave lines up with
- * itself. Returns 0 when there is no clear pitch. */
-static float detect_pitch(const int16_t *x)
-{
-    static float d[TUNE_MAX_LAG + 1];
-    float energy = 0;
-    for (int i = 0; i < TUNE_WINDOW; i++) energy += (float)x[i] * x[i];
-    if (energy / TUNE_WINDOW < 40.0f * 40.0f) return 0; /* too quiet to trust */
-
-    float running = 0;
-    d[0] = 1;
-    for (int lag = 1; lag <= TUNE_MAX_LAG; lag++) {
-        float sum = 0;
-        for (int i = 0; i < TUNE_WINDOW; i++) {
-            float diff = (float)(x[i] - x[i + lag]);
-            sum += diff * diff;
-        }
-        running += sum;
-        d[lag] = running > 0 ? sum * lag / running : 1;
-    }
-    for (int lag = TUNE_MIN_LAG; lag < TUNE_MAX_LAG; lag++) {
-        if (d[lag] >= 0.12f) continue;
-        while (lag + 1 < TUNE_MAX_LAG && d[lag + 1] < d[lag]) lag++;
-        /* Fit a parabola through the dip for a finer answer than whole samples. */
-        float a = d[lag - 1], b = d[lag], c = d[lag + 1];
-        float shift = (a + c - 2 * b) != 0 ? 0.5f * (a - c) / (a + c - 2 * b) : 0;
-        return (float)REC_RATE / ((float)lag + shift);
-    }
-    return 0;
-}
-
-static void tuner_task(void *arg)
-{
-    LV_UNUSED(arg);
-    /* Three blocks of history: more than the 1324 samples one analysis needs. */
-    enum { HISTORY = 3 * CHUNK };
-    static int16_t stereo[CHUNK * 2], window[HISTORY];
-    _Static_assert(HISTORY >= TUNE_WINDOW + TUNE_MAX_LAG, "tuner history too short");
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        xSemaphoreTake(bus_lock, portMAX_DELAY);
-        if (tuner_on && bus_open(REC_RATE)) {
-            int have = 0, blocks = 0;
-            while (tuner_on && esp_codec_dev_read(mic, stereo, sizeof(stereo)) == ESP_CODEC_DEV_OK) {
-                /* Once full, slide the history along by one block. */
-                if (have == HISTORY) {
-                    memmove(window, window + CHUNK, (size_t)(HISTORY - CHUNK) * sizeof(int16_t));
-                    have -= CHUNK;
-                }
-                for (int i = 0; i < CHUNK; i++) window[have + i] = (int16_t)((stereo[2 * i] + stereo[2 * i + 1]) / 2);
-                have += CHUNK;
-                if (have < HISTORY || ++blocks % 4) continue;
-                float hz = detect_pitch(window);
-                ui_post(tuner_apply, (void *)(uintptr_t)(hz * 100.0f));
-            }
-            bus_close();
-        }
-        xSemaphoreGive(bus_lock);
-        ui_post(tuner_apply, NULL);
-    }
-}
-
-void svc_tuner(bool on)
-{
-    tuner_on = on;
-    if (on && tuner_handle) xTaskNotifyGive(tuner_handle);
-}
-
 void audio_init(void)
 {
     spk = bsp_audio_codec_speaker_init();
@@ -343,6 +225,4 @@ void audio_init(void)
     sounds = xQueueCreate(4, sizeof(int));
     /* Stacks in external RAM: these tasks never touch flash, and internal RAM is scarce. */
     xTaskCreateWithCaps(sound_task, "sound", 4096, NULL, 4, NULL, MALLOC_CAP_SPIRAM);
-    xTaskCreateWithCaps(synth_task, "synth", 4096, NULL, 7, &synth_handle, MALLOC_CAP_SPIRAM);
-    xTaskCreateWithCaps(tuner_task, "tuner", 4096, NULL, 4, &tuner_handle, MALLOC_CAP_SPIRAM);
 }

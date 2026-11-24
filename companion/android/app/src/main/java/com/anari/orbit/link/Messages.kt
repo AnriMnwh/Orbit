@@ -89,45 +89,6 @@ object Agenda {
     private fun utcDate(ms: Long): LocalDate = Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toLocalDate()
 }
 
-/** Which gem the watch's Vision face shows: an element and the region whose frame it sits in. */
-data class VisionChoice(val element: Int = 0, val region: Int = 0) {
-    fun merge(json: JSONObject) = copy(element = json.optInt("el", element), region = json.optInt("region", region))
-
-    companion object {
-        val ELEMENTS = listOf("Anemo", "Geo", "Electro", "Dendro", "Hydro", "Pyro", "Cryo")
-        val REGIONS = listOf("Mondstadt", "Liyue", "Inazuma", "Sumeru", "Fontaine", "Natlan", "Snezhnaya")
-    }
-}
-
-/**
- * The Battery Charge counter of the watch's ZZZ app, as last reported. The
- * watch does not send a line for every point; the phone works out the count
- * in between from when the watch said it would be full.
- */
-data class BatteryCharge(
-    /** The count when the watch sent it. */
-    val charge: Int,
-    /** The UTC second the count reaches the top; 0 when the watch is not counting. */
-    val fullAt: Long,
-    /** Today's errands, one bit each (see [ERRANDS]). */
-    val done: Int,
-) {
-    /** The count at [nowSeconds]: one point comes back every six minutes, up to the top. */
-    fun at(nowSeconds: Long): Int = when {
-        fullAt == 0L -> charge.coerceIn(0, MAX)
-        nowSeconds >= fullAt -> MAX
-        else -> (MAX - (fullAt - nowSeconds + SECONDS_PER_POINT - 1) / SECONDS_PER_POINT).toInt().coerceIn(0, MAX)
-    }
-
-    companion object {
-        const val MAX = 240
-        const val SECONDS_PER_POINT = 360L
-        val ERRANDS = listOf(1 to "Coffee", 2 to "Scratch card", 4 to "Video store", 8 to "Daily 400")
-
-        fun from(json: JSONObject) = BatteryCharge(json.optInt("charge", 0), json.optLong("full", 0), json.optInt("done", 0))
-    }
-}
-
 /** Today's weather. Temperatures in Celsius; [code] is the World Meteorological Organization's weather code. */
 data class WeatherReport(val temp: Double, val high: Double, val low: Double, val code: Int) {
     val text get() = Weather.describe(code)
@@ -225,19 +186,15 @@ object Messages {
     fun find(on: Boolean): JSONObject = JSONObject().put("t", "find").put("n", on)
 
     /** Changes one of the watch's settings from the phone. */
-    fun configure(key: String, value: Any): JSONObject =
-        JSONObject().put("t", "cfg").put("set", JSONObject().put(key, value))
+    fun configure(key: String, value: Any): JSONObject {
+        val v = if (value is Collection<*>) JSONArray(value) else value
+        return JSONObject().put("t", "cfg").put("set", JSONObject().put(key, v))
+    }
 
     fun photo(key: String, bytes: ByteArray): JSONObject = JSONObject().put("t", "blob").put("kind", "photo")
         .put("key", key).put("len", bytes.size).put("crc", Link.crc32Hex(bytes))
 
     fun photoDelete(name: String): JSONObject = JSONObject().put("t", "photos").put("n", "delete").put("name", name)
-
-    /** Changes the Vision gem: [key] is "el" or "region". */
-    fun vision(key: String, value: Int): JSONObject = JSONObject().put("t", "vision").put("set", JSONObject().put(key, value))
-
-    /** Changes the Battery Charge tracker: [key] is "charge", "spend" or "done". */
-    fun zzz(key: String, value: Int): JSONObject = JSONObject().put("t", "zzz").put("set", JSONObject().put(key, value))
 
     /** The days of a month that have something on, for the dots in the watch's calendar. */
     fun busy(month: YearMonth, days: List<Int>): JSONObject =
@@ -259,6 +216,11 @@ data class WatchConfig(
     val face: Int = 0,
     /** Index into [ACCENTS]. */
     val accent: Int = 0,
+    val compLeft: Int = 0,
+    val compRight: Int = 1,
+    val faces: List<Int> = listOf(0, 1, 2, 3),
+    val styles: List<Int> = listOf(0, 0, 0, 0),
+    val gridLauncher: Boolean = false,
 ) {
     /** The watch may send every setting or only the ones that changed. */
     fun merge(json: JSONObject) = copy(
@@ -272,10 +234,26 @@ data class WatchConfig(
         alwaysOn = json.optInt("aod", alwaysOn),
         timeoutSeconds = json.optInt("timeout", timeoutSeconds),
         stepGoal = json.optInt("goal", stepGoal),
+        compLeft = json.optInt("compL", compLeft),
+        compRight = json.optInt("compR", compRight),
+        gridLauncher = json.optBoolean("grid", gridLauncher),
+        faces = json.optJSONArray("faces")?.let { arr ->
+            (0 until arr.length()).map { arr.optInt(it) }.distinct().filter { it in FACES.indices }.ifEmpty { faces }
+        } ?: faces,
+        styles = json.optJSONArray("styles")?.let { arr ->
+            (0 until FACES.size).map { i -> if (i < arr.length()) arr.optInt(i, 0).coerceIn(0, 2) else styles.getOrElse(i) { 0 } }
+        } ?: styles,
     )
 
     companion object {
-        val FACES = listOf("Digital", "Analog", "Photo", "Vision", "TV wall")
+        val FACES = listOf("Digital", "Analog", "Modular", "Photo")
+        val COMPLICATIONS = listOf("Battery", "Steps", "Weather", "Day", "Pet", "Agenda", "None")
+        val FACE_STYLES = listOf(
+            listOf("Stacked", "Compact", "Minimal"),
+            listOf("Classic", "Minimal", "Sport"),
+            listOf("Agenda", "Weather", "Pet"),
+            listOf("Bottom", "Top", "Corner"),
+        )
 
         /** The watch's accent colours, as names and 0xRRGGBB. */
         val ACCENTS = listOf(

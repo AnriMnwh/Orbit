@@ -31,13 +31,9 @@ static int music_position(void)
     return p;
 }
 
-static void music_paint(void)
+static void music_tick(void)
 {
     bool have = S.media.valid && S.media.title[0];
-    lv_label_set_text(m_title, have ? S.media.title : "Nothing playing");
-    lv_label_set_text(m_artist, have ? S.media.artist : "");
-    ui_icon_set(ui_btn_icon(m_play), S.media.playing ? &ic_pause_48 : &ic_play_48, lv_color_black());
-
     char buf[40];
     if (have && S.media.duration_s > 0) {
         int p = music_position();
@@ -48,6 +44,17 @@ static void music_paint(void)
         buf[0] = 0;
     }
     lv_label_set_text(m_time, buf);
+}
+
+static void music_paint(void)
+{
+    bool have = S.media.valid && S.media.title[0];
+    lv_label_set_text(m_title, have ? S.media.title : "Nothing playing");
+    lv_label_set_text(m_artist, have ? S.media.artist : "");
+    ui_icon_set(ui_btn_icon(m_play), S.media.playing ? &ic_pause_48 : &ic_play_48, lv_color_black());
+    music_tick();
+
+    char buf[40];
 
     if (S.link.keys_mode) snprintf(buf, sizeof(buf), "Controlling your computer");
     else if (S.link.status != LINK_CONNECTED) snprintf(buf, sizeof(buf), "Phone not connected");
@@ -85,7 +92,8 @@ static void music_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_MEDIA || e == EVT_LINK || e == EVT_SECOND) music_paint();
+    if (e == EVT_SECOND) music_tick();
+    else if (e == EVT_MEDIA || e == EVT_LINK) music_paint();
 }
 
 static void music_create(lv_obj_t *scr)

@@ -321,10 +321,6 @@ static void scenarios(void)
     shot("46_fitness");
     open_app("weather");
     shot("47_weather");
-    open_app("relax");
-    sim_tap(233, 383);
-    sim_run(2600);
-    shot("48_relax");
     open_app("calc");
     sim_tap(134, 227), sim_tap(200, 293), sim_tap(332, 293), sim_tap(266, 161);
     shot("49_calculator");
@@ -337,8 +333,7 @@ static void scenarios(void)
     settle();
 
     /* The newer apps, one shot each. */
-    static const char *const more[] = {"synth", "metronome", "tuner", "level", "find", "counter", "dice", "sun",
-                                       "exposure", "focus", "water", "workout", "presenter", "reflex"};
+    static const char *const more[] = {"find", "sun", "exposure", "workout", "presenter"};
     double place[2] = {-33.8568, 151.2153};
     S.gps.lat = place[0], S.gps.lon = place[1], S.gps.fix = true;
     CFG.tz_minutes = 660;
@@ -461,61 +456,12 @@ static void scenarios(void)
     shell_home();
     settle();
 
-    /* Fluid, Vision and ZZZ, with their watch faces and always-on versions. */
-    extern void fluid_sim_stroke(void);
-    extern void vision_sim_set(int element, int region);
-    extern void zzz_sim_preset(int charge, int done);
-    open_app("fluid");
-    sim_run(4000);
-    shot("x01_fluid");
-    fluid_sim_stroke();
-    sim_run(400);
-    shot("x02_fluid_stirred");
-    sim_tap(233, 430); /* next palette */
-    sim_run(7000);
-    shot("x03_fluid_ember");
-
-    static const char *const gems[7] = {"x10_vision_anemo",  "x11_vision_geo",  "x12_vision_electro", "x13_vision_dendro",
-                                        "x14_vision_hydro", "x15_vision_pyro", "x16_vision_cryo"};
-    open_app("vision");
-    for (int i = 0; i < 7; i++) {
-        vision_sim_set(i, i);
-        sim_run(300);
-        shot(gems[i]);
-    }
-    shell_home();
-    settle();
-    vision_sim_set(4, 4);
-    set_face(FACE_VISION);
-    shot("x18_face_vision");
-    vision_sim_set(5, 0);
-    sim_run(300);
-    shot("x19_face_vision_pyro");
-    CFG.aod_mode = AOD_CLOCK;
-    shell_rest();
-    sim_run(200);
-    shot("x20_aod_vision");
-    shell_wake();
-
-    zzz_sim_preset(182, 0x5);
-    set_face(FACE_ZZZ);
-    shot("x21_face_zzz");
-    sim_run(3300);
-    shot("x21b_face_zzz_static");
-    shell_rest();
-    sim_run(200);
-    shot("x22_aod_zzz");
-    shell_wake();
-    settle();
-    open_app("zzz");
-    shot("x23_zzz");
     open_app("faces");
     sim_run(300);
     shot("x24_face_picker");
     shell_home();
     set_face(FACE_DIGITAL);
 
-    extern void extra_sim_marble(int points);
     open_app("world");
     shot("x30_world");
     /* A month of entries from the phone: the Agenda list, the month view's
@@ -574,12 +520,6 @@ static void scenarios(void)
     extra_sim_moon(22.0);
     shot("x32c_moon_waning");
     extra_sim_moon(0);
-    open_app("marble");
-    shot("x33_marble");
-    sim_tap(233, 233);
-    extra_sim_marble(7);
-    sim_run(900);
-    shot("x34_marble_playing");
     shell_home();
 }
 

@@ -6,8 +6,6 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
-import com.anari.orbit.link.BatteryCharge
-import com.anari.orbit.link.VisionChoice
 import com.anari.orbit.link.WatchConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
@@ -17,6 +15,8 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+
+data class OtaReady(val ip: String, val pin: String, val expiresAtMs: Long)
 
 /** What the setup screen shows. Written by the services, read by the screen. */
 data class WatchState(
@@ -41,10 +41,7 @@ data class WatchState(
     val steps: List<Pair<LocalDate, Int>> = emptyList(),
     /** The watch's reason for not taking more photos just now, or empty. */
     val photoProblem: String = "",
-    /** The gem on the watch's Vision face; null until the watch reports it. */
-    val vision: VisionChoice? = null,
-    /** The watch's Battery Charge tracker; null until the watch reports it. */
-    val batteryCharge: BatteryCharge? = null,
+    val ota: OtaReady? = null,
 )
 
 /** The one place the app's parts find each other. They all live in one process. */

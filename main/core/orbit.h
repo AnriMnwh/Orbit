@@ -37,9 +37,7 @@ typedef enum {
     EVT_SETTINGS,
     EVT_DISPLAY,  /* display power state changed */
     EVT_MACROS,
-    EVT_TUNER,    /* a new pitch reading from the microphone */
     EVT_AGENDA,   /* the calendar entries from the phone changed */
-    EVT_GAME,     /* the Vision or ZZZ app's choices changed */
 } evt_t;
 
 typedef void (*bus_cb_t)(evt_t e, void *data, void *user);
@@ -63,7 +61,6 @@ typedef struct {
     link_status_t status;
     peer_kind_t peer;
     bool keys_mode; /* acting as a Bluetooth keyboard instead of a phone companion */
-    bool midi_mode; /* acting as a Bluetooth MIDI instrument */
     bool app;       /* the Orbit phone app is on the other end (richer than Gadgetbridge) */
     char name[32];
 } link_t;
@@ -76,6 +73,8 @@ typedef struct {
     char setup_pass[12]; /* password of the setup hotspot, new each time */
     bool joining;        /* trying a network chosen on the watch */
     bool failed;         /* that attempt did not work (wrong password, out of range) */
+    bool web_active;     /* setup HTTP server is currently running */
+    char web_pin[8];     /* 6-digit session PIN for the setup page */
 } wifi_t;
 
 #define WIFI_SCAN_MAX 12
@@ -182,10 +181,6 @@ typedef struct {
     agent_t agent;
     uint32_t steps;
     display_state_t display;
-    struct {
-        bool valid; /* a steady pitch is being heard */
-        float hz;
-    } tuner;
     /* Until the power button is pressed: */
     bool theatre;    /* display stays dark */
     bool touch_lock; /* touches are ignored */
@@ -230,10 +225,10 @@ void notif_clear(void);
 
 /* ---------------------------------------------------------------- settings */
 
-enum { FACE_DIGITAL, FACE_ANALOG, FACE_PHOTO, FACE_VISION, FACE_ZZZ, FACE_COUNT };
+enum { FACE_DIGITAL, FACE_ANALOG, FACE_MODULAR, FACE_PHOTO, FACE_COUNT };
 enum { AOD_OFF, AOD_CLOCK, AOD_PHOTOS, AOD_COUNT };
-/* What the two rings on the digital face show. */
-enum { COMP_BATTERY, COMP_STEPS, COMP_WEATHER, COMP_DAY, COMP_NONE, COMP_COUNT };
+/* What the two complication slots on a watch face show. */
+enum { COMP_BATTERY, COMP_STEPS, COMP_WEATHER, COMP_DAY, COMP_PET, COMP_AGENDA, COMP_NONE, COMP_COUNT };
 /* Tiles beside the watch face. 0 ends the list. */
 enum { TILE_NONE, TILE_MUSIC, TILE_ACTIVITY, TILE_WEATHER, TILE_TIMER, TILE_ALARM, TILE_PET, TILE_AGENDA, TILE_KINDS };
 #define TILE_SLOTS 6
@@ -260,6 +255,9 @@ typedef struct {
     uint8_t previews;         /* new notifications take over the screen briefly */
     uint8_t charge_limit;     /* battery health: cap charging at 80% */
     uint16_t step_goal;
+    uint8_t face_order[FACE_COUNT]; /* visible watch faces in order; 0xFF ends/unused */
+    uint8_t face_style[FACE_COUNT]; /* 0..2 style variant per face */
+    uint8_t grid_launcher;          /* 0 = curved list, 1 = 3-col icon grid */
 } settings_t;
 
 extern settings_t CFG;

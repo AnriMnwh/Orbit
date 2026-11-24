@@ -23,11 +23,14 @@ static const char *TAG = "net";
 
 #define GOT_IP BIT0
 #define SETUP_SSID "Orbit-Setup"
+#define SETUP_IDLE_US (10 * 60 * 1000000ULL)
+#define NTP_TIMEOUT_US (30 * 1000000ULL)
 
 static EventGroupHandle_t events;
-static esp_timer_handle_t retry_timer;
+static esp_timer_handle_t retry_timer, setup_timer, ntp_timer;
 static bool wifi_up, want_link, online, setup_mode, camera_mode, sntp_started;
 static bool joining, failed; /* a network picked on the watch is being tried / was refused */
+static uint8_t net_needs;
 static int join_tries;
 static char link_ssid[33], link_ip[16], setup_pass[12];
 static TaskHandle_t dns_task_handle;
@@ -89,6 +92,7 @@ bool net_online(void)
 static void on_time_sync(struct timeval *tv)
 {
     clock_set(tv->tv_sec, 0, false);
+    net_release(NET_NEED_NTP);
 }
 
 static void sntp_begin(void)
@@ -157,11 +161,14 @@ static void apply_mode(void)
     if (mode == WIFI_MODE_NULL) {
         if (wifi_up) esp_wifi_stop();
         wifi_up = false;
+        online = false;
+        link_ip[0] = 0;
         return;
     }
     esp_wifi_set_mode(mode);
     if (!wifi_up) {
         esp_wifi_start();
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         wifi_up = true;
     } else if (want_link && !online) {
         esp_wifi_connect();
@@ -173,7 +180,8 @@ static void join_home(void)
 {
     char ssid[33], pass[65];
     camera_mode = false;
-    want_link = net_secret_get("wifi_ssid", ssid, sizeof(ssid));
+    bool have = net_secret_get("wifi_ssid", ssid, sizeof(ssid));
+    want_link = have && (net_needs != 0 || joining);
     if (want_link) {
         net_secret_get("wifi_pass", pass, sizeof(pass));
         set_station(ssid, pass);
@@ -182,6 +190,26 @@ static void join_home(void)
     }
     apply_mode();
     publish();
+}
+
+void net_acquire(uint8_t reason)
+{
+    uint8_t prev = net_needs;
+    net_needs |= reason;
+    if (prev == 0 && net_needs != 0 && !camera_mode) join_home();
+}
+
+void net_release(uint8_t reason)
+{
+    uint8_t prev = net_needs;
+    net_needs &= (uint8_t)~reason;
+    if (prev != 0 && net_needs == 0 && !camera_mode && !joining && !setup_mode) join_home();
+}
+
+void svc_wifi_enable(bool on)
+{
+    if (on) net_acquire(NET_NEED_MANUAL);
+    else net_release(NET_NEED_MANUAL | NET_NEED_SETUP | NET_NEED_NTP);
 }
 
 /* Called by the setup page after new credentials are saved. */
@@ -274,10 +302,16 @@ static void setup_begin(void *arg)
         esp_wifi_set_config(WIFI_IF_AP, &ap);
         if (!wifi_up) {
             esp_wifi_start();
+            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
             wifi_up = true;
         }
         if (!dns_task_handle) xTaskCreate(dns_task, "dns", 3072, NULL, 4, &dns_task_handle);
+        if (setup_timer) {
+            esp_timer_stop(setup_timer);
+            esp_timer_start_once(setup_timer, SETUP_IDLE_US);
+        }
     } else {
+        if (setup_timer) esp_timer_stop(setup_timer);
         apply_mode();
     }
     publish();
@@ -386,6 +420,18 @@ bool svc_configured(int what)
     return what >= 0 && what <= HAS_CAMERA && net_secret_get(keys[what], value, sizeof(value));
 }
 
+static void setup_timeout_cb(void *arg)
+{
+    LV_UNUSED(arg);
+    svc_wifi_setup_mode(false);
+}
+
+static void ntp_timeout_cb(void *arg)
+{
+    LV_UNUSED(arg);
+    net_release(NET_NEED_NTP);
+}
+
 void net_init(void)
 {
     events = xEventGroupCreate();
@@ -401,11 +447,19 @@ void net_init(void)
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL);
     const esp_timer_create_args_t t = {.callback = retry_cb, .name = "wifi-retry"};
     esp_timer_create(&t, &retry_timer);
+    const esp_timer_create_args_t st = {.callback = setup_timeout_cb, .name = "setup-timeout"};
+    esp_timer_create(&st, &setup_timer);
+    const esp_timer_create_args_t nt = {.callback = ntp_timeout_cb, .name = "ntp-timeout"};
+    esp_timer_create(&nt, &ntp_timer);
 
     if (mdns_init() == ESP_OK) {
         mdns_hostname_set("orbit");
         mdns_instance_name_set("Orbit watch");
         mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    }
+    if (!svc_time_valid() && svc_configured(HAS_WIFI)) {
+        net_needs |= NET_NEED_NTP;
+        esp_timer_start_once(ntp_timer, NTP_TIMEOUT_US);
     }
     join_home();
 }

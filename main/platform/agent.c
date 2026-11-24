@@ -43,8 +43,7 @@ static const char TOOLS[] =
     "{\"type\":\"function\",\"function\":{\"name\":\"open_app\",\"description\":\"Open an app on the watch.\","
     "\"parameters\":{\"type\":\"object\",\"properties\":{\"app\":{\"type\":\"string\",\"enum\":[\"music\",\"keys\","
     "\"phone\",\"maps\",\"camera\",\"photos\",\"pet\",\"timer\",\"settings\",\"torch\",\"alarm\",\"stopwatch\","
-    "\"weather\",\"fitness\",\"relax\",\"calc\",\"synth\",\"metronome\",\"tuner\",\"level\",\"find\",\"counter\","
-    "\"dice\",\"sun\",\"exposure\",\"focus\",\"water\",\"workout\",\"presenter\",\"reflex\"]}},\"required\":[\"app\"]}}},"
+    "\"weather\",\"fitness\",\"calc\",\"find\",\"sun\",\"exposure\",\"workout\",\"presenter\",\"world\",\"calendar\",\"agenda\",\"moon\"]}},\"required\":[\"app\"]}}},"
     "{\"type\":\"function\",\"function\":{\"name\":\"set_brightness\",\"description\":\"Screen brightness, 5 to 100.\","
     "\"parameters\":{\"type\":\"object\",\"properties\":{\"percent\":{\"type\":\"integer\"}},\"required\":[\"percent\"]}}},"
     "{\"type\":\"function\",\"function\":{\"name\":\"do_not_disturb\",\"description\":\"Silence notifications.\","
@@ -416,7 +415,13 @@ static void run(void)
         return;
     }
     if (!err && !cfg.key[0]) err = "Add your OpenAI key on the setup page";
-    else if (!err && !net_online()) err = "Wi-Fi is not connected";
+    bool acquired_net = false;
+    if (!err && !net_online() && svc_configured(HAS_WIFI)) {
+        net_acquire(NET_NEED_AGENT);
+        acquired_net = true;
+        for (int i = 0; i < 60 && !net_online() && !cancelled; i++) vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    if (!err && !net_online()) err = "Wi-Fi is not connected";
 
     if (!err && !cancelled) heard = transcribe(key, pcm, samples, &err);
     free(pcm);
@@ -434,6 +439,7 @@ static void run(void)
         publish(AGENT_ERROR, NULL, NULL, err ? err : "Something went wrong");
         svc_sound(SND_ERROR);
     }
+    if (acquired_net) net_release(NET_NEED_AGENT);
     free(heard);
     free(reply);
 }

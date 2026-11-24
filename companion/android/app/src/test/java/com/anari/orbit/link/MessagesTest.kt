@@ -181,38 +181,11 @@ class MessagesTest {
     }
 
     @Test
-    fun `battery charge is counted forward from when the watch says it will be full`() {
-        val full = 1_794_300_000L
-        val reported = BatteryCharge.from(JSONObject("""{"t":"zzz","charge":182,"full":$full,"done":5}"""))
-
-        assertEquals(182, reported.at(full - 58 * 360))      // 58 points to go, as sent
-        assertEquals(182, reported.at(full - 58 * 360 + 359)) // not quite another point yet
-        assertEquals(183, reported.at(full - 57 * 360))
-        assertEquals(239, reported.at(full - 1))
-        assertEquals(240, reported.at(full))
-        assertEquals(240, reported.at(full + 99_999))
-        assertEquals(0, reported.at(full - 500 * 360))        // never below empty
-        assertEquals(5, reported.done)
-        // Not counting (never set, or the watch's clock is not set): show what it sent.
-        assertEquals(40, BatteryCharge(40, 0, 0).at(full))
-    }
-
-    @Test
-    fun `the vision gem and the new settings merge like the rest`() {
-        val gem = VisionChoice().merge(JSONObject("""{"t":"vision","el":4,"region":4}"""))
-        assertEquals("Hydro", VisionChoice.ELEMENTS[gem.element])
-        assertEquals("Fontaine", VisionChoice.REGIONS[gem.region])
-        assertEquals(VisionChoice(4, 2), gem.merge(JSONObject("""{"region":2}""")))
-        assertEquals("vision", Messages.vision("el", 5).getString("t"))
-        assertEquals(5, Messages.vision("el", 5).getJSONObject("set").getInt("el"))
-        assertEquals("zzz", Messages.zzz("spend", 40).getString("t"))
-        assertEquals(40, Messages.zzz("spend", 40).getJSONObject("set").getInt("spend"))
-
-        val config = WatchConfig().merge(JSONObject("""{"brightness":70,"face":3,"accent":2}"""))
-        assertEquals("Vision", WatchConfig.FACES[config.face])
+    fun `watch faces and accents merge like the rest`() {
+        val config = WatchConfig().merge(JSONObject("""{"brightness":70,"face":2,"accent":2}"""))
+        assertEquals("Modular", WatchConfig.FACES[config.face])
         assertEquals("Rose", WatchConfig.ACCENTS[config.accent].first)
-        assertEquals(3, config.merge(JSONObject("""{"dnd":true}""")).face)
-        assertEquals(7, VisionChoice.ELEMENTS.size)
+        assertEquals(2, config.merge(JSONObject("""{"dnd":true}""")).face)
         assertEquals(6, WatchConfig.ACCENTS.size)
     }
 

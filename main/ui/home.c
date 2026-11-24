@@ -22,13 +22,17 @@ static void launcher_curve(lv_event_t *e)
         lv_obj_t *row = lv_obj_get_child(list, (int32_t)i);
         lv_area_t ra;
         lv_obj_get_coords(row, &ra);
+        if (ra.y2 < la.y1 - 40 || ra.y1 > la.y2 + 40) continue;
         int d = LV_ABS((ra.y1 + ra.y2) / 2 - mid);
         if (d > 233) d = 233;
         /* x on a circle of radius 233: r - sqrt(r^2 - d^2) */
         lv_sqrt_res_t s;
         lv_sqrt((uint32_t)(233 * 233 - d * d), &s, 0x8000);
-        lv_obj_set_style_translate_x(row, 233 - s.i, 0);
-        lv_obj_set_style_opa(lv_obj_get_child(row, 1), (lv_opa_t)(255 - d * 190 / 233), 0);
+        int32_t tx = 233 - s.i;
+        if (lv_obj_get_style_translate_x(row, 0) != tx) lv_obj_set_style_translate_x(row, tx, 0);
+        lv_opa_t opa = (lv_opa_t)(255 - d * 190 / 233);
+        lv_obj_t *lbl = lv_obj_get_child(row, 1);
+        if (lbl && lv_obj_get_style_text_opa(lbl, 0) != opa) lv_obj_set_style_text_opa(lbl, opa, 0);
     }
 }
 
@@ -37,12 +41,26 @@ static void launcher_open(lv_event_t *e)
     shell_open(lv_event_get_user_data(e));
 }
 
+static lv_obj_t *launch_scr;
+
+static void launcher_build(void);
+
+static void launcher_toggle_view(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    CFG.grid_launcher = !CFG.grid_launcher;
+    settings_changed();
+    shell_toast(CFG.grid_launcher ? "Grid view" : "List view");
+    launcher_build();
+}
+
 static void launcher_row(lv_obj_t *list, const app_t *app)
 {
     lv_color_t c = lv_color_hex(app->color);
     lv_obj_t *row = ui_box(list, 330, ROW_H);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(row, launcher_open, LV_EVENT_SHORT_CLICKED, (void *)app);
+    lv_obj_add_event_cb(row, launcher_toggle_view, LV_EVENT_LONG_PRESSED, NULL);
 
     lv_obj_t *dot = ui_round_btn(row, 84, ui_tint(c, 24), app->icon, c, NULL, NULL);
     lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
@@ -51,10 +69,59 @@ static void launcher_row(lv_obj_t *list, const app_t *app)
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 108, 0);
 }
 
-void launcher_create(lv_obj_t *tile)
+static void launcher_grid_cell(lv_obj_t *row, const app_t *app)
 {
-    lv_obj_t *list = ui_box(tile, SCR, SCR);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_color_t c = lv_color_hex(app->color);
+    lv_obj_t *cell = ui_box(row, 108, 118);
+    lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(cell, launcher_open, LV_EVENT_SHORT_CLICKED, (void *)app);
+    lv_obj_add_event_cb(cell, launcher_toggle_view, LV_EVENT_LONG_PRESSED, NULL);
+
+    lv_obj_t *dot = ui_round_btn(cell, 86, ui_tint(c, 24), app->icon, c, NULL, NULL);
+    lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(dot, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_t *name = ui_label_fit(cell, app->name, F14, C_DIM, 104);
+    lv_obj_align(name, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
+static void launcher_build(void)
+{
+    if (!launch_scr) return;
+    lv_obj_clean(launch_scr);
+
+    const app_t *ordered[64];
+    int count = 0;
+    const app_t *recent[2] = {shell_recent(0), shell_recent(1)};
+    for (int i = 0; i < 2; i++) {
+        if (recent[i] && count < 64) ordered[count++] = recent[i];
+    }
+    for (int i = 0; i < APP_COUNT && count < 64; i++) {
+        if (APPS[i] != recent[0] && APPS[i] != recent[1]) ordered[count++] = APPS[i];
+    }
+
+    if (CFG.grid_launcher) {
+        lv_obj_t *col = ui_box(launch_scr, SCR, SCR);
+        lv_obj_add_flag(col, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_scroll_dir(col, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_top(col, 64, 0);
+        lv_obj_set_style_pad_bottom(col, 96, 0);
+        lv_obj_set_style_pad_row(col, 14, 0);
+        lv_obj_add_event_cb(col, launcher_toggle_view, LV_EVENT_LONG_PRESSED, NULL);
+
+        for (int i = 0; i < count; i += 3) {
+            lv_obj_t *row = ui_box(col, LV_SIZE_CONTENT, 118);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_style_pad_column(row, 14, 0);
+            for (int k = 0; k < 3 && i + k < count; k++) launcher_grid_cell(row, ordered[i + k]);
+        }
+        return;
+    }
+
+    lv_obj_t *list = ui_box(launch_scr, SCR, SCR);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_snap_y(list, LV_SCROLL_SNAP_CENTER);
@@ -63,18 +130,25 @@ void launcher_create(lv_obj_t *tile)
     lv_obj_set_style_pad_ver(list, (SCR - ROW_H) / 2, 0);
     lv_obj_set_style_pad_left(list, 56, 0);
     lv_obj_add_event_cb(list, launcher_curve, LV_EVENT_SCROLL, NULL);
+    lv_obj_add_event_cb(list, launcher_toggle_view, LV_EVENT_LONG_PRESSED, NULL);
 
-    /* Recently used apps first, then everything in alphabetical order. */
-    const app_t *recent[2] = {shell_recent(0), shell_recent(1)};
-    for (int i = 0; i < 2; i++) {
-        if (recent[i]) launcher_row(list, recent[i]);
-    }
-    for (int i = 0; i < APP_COUNT; i++) {
-        if (APPS[i] != recent[0] && APPS[i] != recent[1]) launcher_row(list, APPS[i]);
-    }
+    for (int i = 0; i < count; i++) launcher_row(list, ordered[i]);
     lv_obj_update_layout(list);
-    lv_obj_scroll_to_view(lv_obj_get_child(list, 1), LV_ANIM_OFF);
+    if (count > 1) lv_obj_scroll_to_view(lv_obj_get_child(list, 1), LV_ANIM_OFF);
     lv_obj_send_event(list, LV_EVENT_SCROLL, NULL);
+}
+
+static void launcher_closed(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    launch_scr = NULL;
+}
+
+void launcher_create(lv_obj_t *tile)
+{
+    launch_scr = tile;
+    lv_obj_add_event_cb(tile, launcher_closed, LV_EVENT_DELETE, NULL);
+    launcher_build();
 }
 
 /* The app list is its own screen, opened with the side button as on Wear OS. */
@@ -88,7 +162,7 @@ enum {
     Q_SLEEP, Q_AOD, Q_DND,
     Q_SETTINGS, Q_TORCH, Q_SAVER,
     Q_BEDTIME, Q_THEATRE, Q_LOCK,
-    Q_FIND, Q_KEYS, Q_APPS,
+    Q_FIND, Q_KEYS, Q_WIFI,
     Q_COUNT,
 };
 
@@ -104,6 +178,7 @@ static bool quick_state(int id)
     case Q_SAVER: return CFG.saver;
     case Q_AOD: return CFG.aod_mode != AOD_OFF;
     case Q_KEYS: return S.link.keys_mode;
+    case Q_WIFI: return S.wifi.connected || S.wifi.joining;
     default: return false;
     }
 }
@@ -116,7 +191,6 @@ static void quick_refresh(void)
     lv_label_set_text(q_batt, buf);
 
     if (S.link.keys_mode) snprintf(buf, sizeof(buf), "Keyboard mode");
-    else if (S.link.midi_mode) snprintf(buf, sizeof(buf), "MIDI mode");
     else if (S.link.status == LINK_CONNECTED) snprintf(buf, sizeof(buf), "%s", S.link.name[0] ? S.link.name : "Phone connected");
     else snprintf(buf, sizeof(buf), "Phone not connected");
     lv_label_set_text(q_link, buf);
@@ -173,10 +247,31 @@ static void quick_tap(lv_event_t *e)
         shell_toast(aod[CFG.aod_mode]);
         break;
     case Q_KEYS: svc_link_keys_mode(!S.link.keys_mode); return;
-    case Q_APPS: shell_open(&app_launcher); return;
+    case Q_WIFI:
+        if (!svc_configured(HAS_WIFI)) {
+            settings_open_page("wifi");
+            return;
+        }
+        svc_wifi_enable(!(S.wifi.connected || S.wifi.joining));
+        shell_toast(S.wifi.connected || S.wifi.joining ? "Wi-Fi off" : "Wi-Fi on");
+        return;
     case Q_SETTINGS: shell_open(app_find("settings")); return;
     }
     settings_changed();
+}
+
+static void quick_hold(lv_event_t *e)
+{
+    int id = (int)(intptr_t)lv_event_get_user_data(e);
+    switch (id) {
+    case Q_WIFI: settings_open_page("wifi"); break;
+    case Q_KEYS: settings_open_page("bt"); break;
+    case Q_AOD: settings_open_page("display"); break;
+    case Q_DND:
+    case Q_BEDTIME: settings_open_page("sound"); break;
+    case Q_SAVER: settings_open_page("battery"); break;
+    default: break;
+    }
 }
 
 static void quick_brightness(lv_event_t *e)
@@ -191,7 +286,7 @@ static void quick_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_BATTERY || e == EVT_LINK || e == EVT_SETTINGS) quick_refresh();
+    if (e == EVT_BATTERY || e == EVT_LINK || e == EVT_SETTINGS || e == EVT_WIFI) quick_refresh();
 }
 
 void quick_create(lv_obj_t *tile)
@@ -200,7 +295,7 @@ void quick_create(lv_obj_t *tile)
         [Q_SLEEP] = &ic_power_48,   [Q_AOD] = &ic_clock_48,     [Q_DND] = &ic_moon_48,
         [Q_SETTINGS] = &ic_gear_48, [Q_TORCH] = &ic_torch_48,   [Q_SAVER] = &ic_bolt_48,
         [Q_BEDTIME] = &ic_zzz_48,   [Q_THEATRE] = &ic_half_48,  [Q_LOCK] = &ic_drop_48,
-        [Q_FIND] = &ic_target_48,   [Q_KEYS] = &ic_keys_48,     [Q_APPS] = &ic_grid_48,
+        [Q_FIND] = &ic_target_48,   [Q_KEYS] = &ic_keys_48,     [Q_WIFI] = &ic_wifi_48,
     };
     /* The panel is taller than the screen and scrolls; at its end the same
      * drag carries on into the watch face. */
@@ -240,6 +335,7 @@ void quick_create(lv_obj_t *tile)
     const int sz = 88, gap = 104;
     for (int i = 0; i < Q_COUNT; i++) {
         q_btn[i] = ui_round_btn(col, sz, C_SURF2, icons[i], C_TEXT, quick_tap, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(q_btn[i], quick_hold, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
         lv_obj_set_ext_click_area(q_btn[i], 4);
         int x = SCR_C - sz / 2 + (i % 3 - 1) * gap;
         lv_obj_set_pos(q_btn[i], x, 162 + (i / 3) * gap);
@@ -607,8 +703,92 @@ static void pet_tile(lv_obj_t *tile)
     bus_watch(tile, pet_tile_event, NULL);
 }
 
+static lv_obj_t *tile_ed_veil;
+static int tile_ed_kind;
+
+static void tile_ed_close(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (tile_ed_veil) lv_obj_delete(tile_ed_veil);
+    tile_ed_veil = NULL;
+}
+
+static int tile_find_idx(int kind)
+{
+    for (int i = 0; i < TILE_SLOTS; i++) {
+        if (CFG.tiles[i] == kind) return i;
+    }
+    return -1;
+}
+
+static void tile_ed_move(lv_event_t *e)
+{
+    int dir = (int)(intptr_t)lv_event_get_user_data(e);
+    int at = tile_find_idx(tile_ed_kind);
+    int n = 0;
+    while (n < TILE_SLOTS && CFG.tiles[n] != TILE_NONE) n++;
+    int to = at + dir;
+    if (at >= 0 && to >= 0 && to < n) {
+        uint8_t tmp = CFG.tiles[at];
+        CFG.tiles[at] = CFG.tiles[to];
+        CFG.tiles[to] = tmp;
+        tile_ed_close(NULL);
+        shell_rebuild_tiles();
+        settings_changed();
+        return;
+    }
+    tile_ed_close(NULL);
+}
+
+static void tile_ed_hide(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    int at = tile_find_idx(tile_ed_kind);
+    if (at >= 0) {
+        memmove(&CFG.tiles[at], &CFG.tiles[at + 1], (size_t)(TILE_SLOTS - at - 1));
+        CFG.tiles[TILE_SLOTS - 1] = TILE_NONE;
+        tile_ed_close(NULL);
+        shell_rebuild_tiles();
+        settings_changed();
+        return;
+    }
+    tile_ed_close(NULL);
+}
+
+static void tile_ed_all(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    tile_ed_close(NULL);
+    settings_open_page("tiles");
+}
+
+static void tile_long_press(lv_event_t *e)
+{
+    tile_ed_kind = (int)(intptr_t)lv_event_get_user_data(e);
+    if (tile_ed_veil) lv_obj_delete(tile_ed_veil);
+    tile_ed_veil = ui_box(lv_layer_top(), SCR, SCR);
+    lv_obj_set_style_bg_color(tile_ed_veil, C_BG, 0);
+    lv_obj_set_style_bg_opa(tile_ed_veil, LV_OPA_90, 0);
+    lv_obj_add_flag(tile_ed_veil, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_align(ui_label(tile_ed_veil, "TILE OPTIONS", F16, ui_accent()), LV_ALIGN_TOP_MID, 0, 54);
+    lv_obj_t *left = ui_round_btn(tile_ed_veil, 76, C_SURF2, &ic_prev_48, C_TEXT, tile_ed_move, (void *)(intptr_t)-1);
+    lv_obj_align(left, LV_ALIGN_CENTER, -84, -44);
+    lv_obj_t *right = ui_round_btn(tile_ed_veil, 76, C_SURF2, &ic_next_48, C_TEXT, tile_ed_move, (void *)(intptr_t)1);
+    lv_obj_align(right, LV_ALIGN_CENTER, 84, -44);
+    lv_obj_t *hide = ui_round_btn(tile_ed_veil, 76, ui_tint(C_BAD, 30), &ic_trash_48, C_BAD, tile_ed_hide, NULL);
+    lv_obj_align(hide, LV_ALIGN_CENTER, 0, -44);
+
+    lv_obj_t *all = ui_pill_btn(tile_ed_veil, "Manage tiles", C_SURF2, C_TEXT, tile_ed_all, NULL);
+    lv_obj_align(all, LV_ALIGN_CENTER, 0, 62);
+    lv_obj_t *done = ui_pill_btn(tile_ed_veil, "Cancel", C_SURF, C_DIM, tile_ed_close, NULL);
+    lv_obj_align(done, LV_ALIGN_BOTTOM_MID, 0, -44);
+}
+
 void tile_create(lv_obj_t *tile, int kind)
 {
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(tile, tile_long_press, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)kind);
     switch (kind) {
     case TILE_MUSIC: music_tile(tile); break;
     case TILE_ACTIVITY: activity_tile(tile); break;

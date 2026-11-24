@@ -445,7 +445,7 @@ static void send_hello(void)
     snprintf(line, sizeof(line),
              "{\"t\":\"orbit\",\"v\":1,\"fw\":\"Orbit %s\",\"caps\":[\"art\",\"music2\",\"agent\","
              "\"place\",\"agenda\",\"photos\",\"cfg\",\"act\",\"replies\",\"phone\","
-             "\"vision\",\"zzz\",\"busy\",\"day\"],"
+             "\"busy\",\"day\"],"
              "\"art\":{\"w\":%d,\"h\":%d,\"max\":%d},\"agenda\":{\"max\":%d,\"days\":%d},\"mtu\":256}",
              ORBIT_VERSION, ART_SIDE, ART_SIDE, ART_MAX, AGENDA_MAX, AGENDA_DAYS);
     gb_send(line);
@@ -521,8 +521,6 @@ bool link_handle(const char *type, cJSON *msg)
             if (strcmp(cap, "agent") == 0) hello_caps |= LINK_CAP_AGENT;
             else if (strcmp(cap, "cfg") == 0) hello_caps |= LINK_CAP_CFG;
             else if (strcmp(cap, "act") == 0) hello_caps |= LINK_CAP_ACT;
-            else if (strcmp(cap, "vision") == 0) hello_caps |= LINK_CAP_VISION;
-            else if (strcmp(cap, "zzz") == 0) hello_caps |= LINK_CAP_ZZZ;
             else if (strcmp(cap, "busy") == 0) hello_caps |= LINK_CAP_BUSY;
             else if (strcmp(cap, "day") == 0) hello_caps |= LINK_CAP_DAY;
         }
@@ -536,6 +534,7 @@ bool link_handle(const char *type, cJSON *msg)
         return true;
     }
     if (strcmp(type, "blob") == 0) {
+        if (!ble_encrypted() || !app) return true;
         cJSON *kind = cJSON_GetObjectItem(msg, "kind");
         const char *what = cJSON_IsString(kind) ? kind->valuestring : "";
         if (strcmp(what, "art") == 0) art_begin(msg);
@@ -543,8 +542,13 @@ bool link_handle(const char *type, cJSON *msg)
         return true;
     }
     if (strcmp(type, "agent") == 0) {
-        if (asking) agent_message(msg); /* an answer nobody is waiting for is dropped */
+        if (ble_encrypted() && app && asking) agent_message(msg);
         return true;
+    }
+    if (strcmp(type, "place") == 0 || strcmp(type, "agenda") == 0 || strcmp(type, "busy") == 0 ||
+        strcmp(type, "day") == 0 || strcmp(type, "replies") == 0 || strcmp(type, "phone") == 0 ||
+        strcmp(type, "cfg") == 0 || strcmp(type, "photos") == 0) {
+        if (!ble_encrypted() || !app) return true;
     }
     return more_handle(type, msg);
 }

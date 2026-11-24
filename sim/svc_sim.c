@@ -126,16 +126,6 @@ void svc_link_keys_mode(bool on)
     bus_emit(EVT_LINK, NULL);
 }
 
-void svc_link_midi_mode(bool on)
-{
-    S.link.midi_mode = on;
-    bus_emit(EVT_LINK, NULL);
-}
-
-void svc_midi(uint8_t status, uint8_t data1, uint8_t data2)
-{
-}
-
 void svc_notif_reply(uint32_t id, const char *text)
 {
     printf("[sim] reply to %u: %s\n", (unsigned)id, text);
@@ -144,17 +134,6 @@ void svc_notif_reply(uint32_t id, const char *text)
 void svc_tilt(float *x, float *y, float *z)
 {
     *x = 0.12f, *y = -0.05f, *z = 0.99f;
-}
-
-void svc_synth(bool on)
-{
-}
-
-void svc_tuner(bool on)
-{
-    S.tuner.valid = on;
-    S.tuner.hz = 438.2f;
-    bus_emit(EVT_TUNER, NULL);
 }
 
 void svc_link_forget(void)
@@ -251,11 +230,29 @@ void svc_call(bool accept)
     bus_emit(EVT_CALL, NULL);
 }
 
+void svc_wifi_enable(bool on)
+{
+    S.wifi.connected = on;
+    bus_emit(EVT_WIFI, NULL);
+}
+
 void svc_wifi_setup_mode(bool on)
 {
     S.wifi.setup_mode = on;
     snprintf(S.wifi.setup_pass, sizeof(S.wifi.setup_pass), "48213907");
     bus_emit(EVT_WIFI, NULL);
+}
+
+void svc_web_enable(bool on)
+{
+    S.wifi.web_active = on;
+    snprintf(S.wifi.web_pin, sizeof(S.wifi.web_pin), "%s", on ? "482910" : "");
+    bus_emit(EVT_WIFI, NULL);
+}
+
+void svc_display_active(bool active)
+{
+    LV_UNUSED(active);
 }
 
 /* --- photos: raw 466x466 RGB565 files written by tools/sim_shots.py --- */
