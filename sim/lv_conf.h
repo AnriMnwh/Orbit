@@ -26,5 +26,6 @@
 #define LV_TXT_BREAK_CHARS " ,.;:-_"
 
 #define LV_USE_QRCODE 1
+#define LV_USE_SNAPSHOT 1 /* swipe pictures, shell.c */
 
 #endif

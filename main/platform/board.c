@@ -26,6 +26,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#undef M_PI /* qmi8658.h defines it again, unguarded; same value */
 #include "qmi8658.h"
 
 #include "platform.h"
@@ -480,19 +481,47 @@ static void inputs_task(void *arg)
 
 /* ------------------------------------------------------------------- main */
 
-/* CO5300 requires even start coordinates and odd end coordinates. */
+/* Draw buffer height: two buffers of this many lines live in internal RAM. */
+#define DRAW_LINES 28
+
+/* The panel is a 466 px circle, but LVGL draws and sends rectangles. Every
+ * area it is about to redraw is cut into bands lined up with the draw buffer
+ * and each band is trimmed to the circle's width at that height, so the
+ * corners nobody sees are neither drawn nor sent: about a sixth of a full
+ * frame. The CO5300 also needs windows with even starts and odd ends. */
 static void display_rounder_cb(lv_event_t *e)
 {
+    static bool splitting;
     lv_area_t *area = (lv_area_t *)lv_event_get_param(e);
+    int32_t band = area->y1 / DRAW_LINES, last = area->y2 / DRAW_LINES;
+    if (!splitting && last > band) {
+        /* Keep the first band here and hand the rest back to LVGL one by one;
+         * they come through this callback again. */
+        lv_obj_t *scr = lv_display_get_screen_active(lv_event_get_current_target(e));
+        splitting = true;
+        for (int32_t b = band + 1; b <= last; b++) {
+            lv_area_t part = {area->x1, b * DRAW_LINES, area->x2, LV_MIN(area->y2, (b + 1) * DRAW_LINES - 1)};
+            lv_obj_invalidate_area(scr, &part);
+        }
+        splitting = false;
+        area->y2 = (band + 1) * DRAW_LINES - 1;
+    }
+    /* The widest row of the circle inside these rows, plus a pixel for the
+     * anti-aliased edge of anything drawn right up to the rim. */
+    const float c = (BSP_LCD_H_RES - 1) / 2.0f, r = BSP_LCD_H_RES / 2.0f;
+    float dy = (area->y1 <= c && area->y2 >= c) ? 0 : fminf(fabsf(area->y1 - c), fabsf(area->y2 - c));
+    float half = dy < r ? sqrtf(r * r - dy * dy) + 1 : 0;
+    int32_t x1 = LV_MAX(area->x1, (int32_t)floorf(c - half)), x2 = LV_MIN(area->x2, (int32_t)ceilf(c + half));
+    if (x1 <= x2) area->x1 = x1, area->x2 = x2; /* else it lies outside the circle: left as it is */
     area->x1 = (area->x1 >> 1) << 1;
     area->y1 = (area->y1 >> 1) << 1;
     area->x2 = ((area->x2 >> 1) << 1) + 1;
     area->y2 = ((area->y2 >> 1) << 1) + 1;
 }
 
-/* Starts display + touch with internal DMA draw buffers (two 24-line, 44.7 KB in all)
- * instead of Waveshare's 50-line PSRAM buffer, which forced spi_master to
- * allocate a 46.6 KB internal DMA bounce buffer on every flush (OOM with Wi-Fi + BLE). */
+/* Starts display + touch with internal DMA draw buffers instead of Waveshare's
+ * 50-line PSRAM buffer, which forced spi_master to allocate a 46.6 KB internal
+ * DMA bounce buffer on every flush (OOM with Wi-Fi + BLE). */
 static bool display_start(void)
 {
     bsp_display_cfg_t cfg = {
@@ -506,12 +535,12 @@ static bool display_start(void)
     cfg.lv_adapter_cfg.task_min_delay_ms = 2;       /* responsive pacing while feeding IDLE1 WDT */
     if (esp_lv_adapter_init(&cfg.lv_adapter_cfg) != ESP_OK) return false;
 
-    /* Two 28-line internal DMA buffers (52 KB total) overlap CPU rendering on
-     * Core 1 with the QSPI transfer. Each frame is drawn in 17 strips; fewer,
-     * taller strips render faster (7-12% over 24 lines), but internal RAM is
-     * what limits them. Buffers in external RAM are far slower: the SPI driver
-     * copies them into internal RAM first. */
-    const int buf_lines = 28;
+    /* Two DRAW_LINES-line internal DMA buffers (52 KB total) overlap CPU
+     * rendering on Core 1 with the QSPI transfer. Taller strips render faster
+     * (28 lines is 7-12% faster than 24), but internal RAM is what limits them.
+     * Buffers in external RAM are far slower: the SPI driver copies them into
+     * internal RAM first. */
+    const int buf_lines = DRAW_LINES;
     const bsp_display_config_t panel_cfg = {
         .max_transfer_sz = BSP_LCD_H_RES * BSP_LCD_V_RES * BSP_LCD_BITS_PER_PIXEL / 8,
     };
@@ -537,6 +566,10 @@ static bool display_start(void)
     lv_display_t *disp = esp_lv_adapter_register_display(&disp_cfg);
     if (!disp) return false;
     lv_display_add_event_cb(disp, display_rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+    /* The panel takes RGB565 big-endian. Rendering straight into that order
+     * spares the adapter swapping every pixel of every strip on the CPU
+     * before sending it (it only swaps plain RGB565). */
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
 
     esp_lcd_touch_handle_t tp = NULL;
     if (bsp_touch_new(&cfg, &tp) != ESP_OK || !tp) return false;

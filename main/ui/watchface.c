@@ -368,7 +368,10 @@ static void dial_prepare(bool ambient, uint8_t style)
     if (dial_cached(ambient, style, acc)) return;
     int slot = dial_next;
     dial_next ^= 1;
-    if (!dial_cache[slot].buf) dial_cache[slot].buf = lv_draw_buf_create(SCR, SCR, LV_COLOR_FORMAT_RGB565, 0);
+    /* In the display's own pixel format, so each frame is a plain copy. */
+    if (!dial_cache[slot].buf) {
+        dial_cache[slot].buf = lv_draw_buf_create(SCR, SCR, lv_display_get_color_format(NULL), 0);
+    }
     if (!dial_cache[slot].buf) return;
     dial_cache[slot].key = 0; /* not valid until drawn */
     static lv_obj_t *canvas;
@@ -377,7 +380,9 @@ static void dial_prepare(bool ambient, uint8_t style)
         lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
     }
     lv_canvas_set_draw_buf(canvas, dial_cache[slot].buf);
-    lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
+    /* All zero is black in either byte order; lv_canvas_fill_bg() silently
+     * skips byte-swapped RGB565 and would leave the buffer's old contents. */
+    lv_draw_buf_clear(dial_cache[slot].buf, NULL);
     lv_layer_t layer;
     lv_canvas_init_layer(canvas, &layer);
     draw_ticks(&layer, 0, 0, ambient, style, acc);

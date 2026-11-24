@@ -61,6 +61,7 @@ static void rest_touched(lv_event_t *e)
 }
 
 static void overlay_close(void);
+static void snaps_release(void);
 
 void shell_rest(void)
 {
@@ -69,6 +70,7 @@ void shell_rest(void)
     bool lit = !quiet() && ((CFG.aod_mode != AOD_OFF && !CFG.saver) || S.batt.plugged);
     S.display = lit ? DISPLAY_AOD : DISPLAY_OFF;
     overlay_close(); /* a forgotten power menu or alert must not sit on the AOD */
+    snaps_release(); /* 2 MB of swipe pictures; retaken within a second of waking */
     rest_scr = lit ? aod_create() : ui_screen();
     lv_obj_add_flag(rest_scr, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(rest_scr, rest_touched, LV_EVENT_PRESSED, NULL);
@@ -221,10 +223,22 @@ void shell_back(void)
     lv_obj_scroll_to_x(pager, 0, LV_ANIM_ON); /* pager_settled() finishes the job */
 }
 
+static void snap_take(lv_obj_t *tile);
+
+static void show_tile_now(void *packed)
+{
+    intptr_t p = (intptr_t)packed;
+    /* No finger landed, so picture the tile being left before it slides. */
+    if (lv_screen_active() == home_scr && S.display == DISPLAY_ACTIVE) snap_take(lv_tileview_get_tile_active(tiles));
+    lv_tileview_set_tile_by_index(tiles, (uint32_t)(p >> 8), (uint32_t)(p & 0xFF), LV_ANIM_ON);
+}
+
 void shell_show_tile(int col, int row)
 {
     home_sync();
-    lv_tileview_set_tile_by_index(tiles, (uint32_t)col, (uint32_t)row, LV_ANIM_ON);
+    /* Deferred: callers may hold the display lock from another task (the side
+     * button), and a picture may only be rendered on the LVGL task itself. */
+    lv_async_call(show_tile_now, (void *)(intptr_t)((col << 8) | row));
 }
 
 static bool at_centre_tile(void)
@@ -665,10 +679,215 @@ static void tick(lv_timer_t *t)
 
 /* ------------------------------------------------------------------ tiles */
 
+/* ---- swipe pictures ----
+ * A full redraw of a home tile takes 35-55 ms on this chip, so a swipe that
+ * drew both moving tiles live ran at about 19 frames a second. During a swipe
+ * the tiles are instead skipped altogether (their layer opacity is zero; they
+ * still take the drag) and one overlay copies pictures of them, taken
+ * beforehand, to where the tiles currently are. Few objects are drawn, as
+ * each costs time whether or not it shows anything.
+ * The tile under the finger is pictured when the finger lands (a clock moves
+ * every second); its neighbours one by one after a swipe settles, and again
+ * while the home screens stay in view: the face every second, others every
+ * 10. Until the settled tile and all its neighbours have pictures, a swipe
+ * draws the tiles live, as before. */
+
+#define SNAP_TILES 8
+#define SNAP_EVERY_MS 150 /* one picture per tick: ~37 ms of UI time each */
+
+typedef struct {
+    lv_obj_t *tile;
+    lv_draw_buf_t *buf;
+    uint32_t taken; /* lv_tick_get() when pictured; 0: none usable */
+} snap_t;
+
+static snap_t snaps[SNAP_TILES];
+static bool swiping;
+static lv_timer_t *snap_timer;
+static lv_obj_t *face_tile, *swipe_view;
+
+static snap_t *snap_of(lv_obj_t *tile, bool create)
+{
+    snap_t *free_slot = NULL;
+    for (int i = 0; i < SNAP_TILES; i++) {
+        if (snaps[i].tile == tile) return &snaps[i];
+        if (!snaps[i].tile && !free_slot) free_slot = &snaps[i];
+    }
+    if (!create || !free_slot) return NULL;
+    free_slot->tile = tile;
+    return free_slot;
+}
+
+static bool home_in_view(void)
+{
+    return S.display == DISPLAY_ACTIVE && !cur_app && lv_screen_active() == home_scr;
+}
+
+static void snap_take(lv_obj_t *tile)
+{
+    if (swiping || !tile) return;
+    snap_t *s = snap_of(tile, true);
+    if (!s) return;
+    s->taken = 0;
+    if (!s->buf) s->buf = lv_draw_buf_create(SCR, SCR, LV_COLOR_FORMAT_RGB565, 0);
+    if (!s->buf) return;
+    s->buf->header.cf = LV_COLOR_FORMAT_RGB565; /* the snapshot only renders plain RGB565 */
+    if (lv_snapshot_take_to_draw_buf(tile, LV_COLOR_FORMAT_RGB565, s->buf) != LV_RESULT_OK) return;
+    if (lv_display_get_color_format(NULL) == LV_COLOR_FORMAT_RGB565_SWAPPED) {
+        /* Once into the panel's byte order, so each frame is a plain copy. */
+        lv_draw_sw_rgb565_swap(s->buf->data, (uint32_t)SCR * SCR);
+        s->buf->header.cf = LV_COLOR_FORMAT_RGB565_SWAPPED;
+    }
+    s->taken = lv_tick_get() | 1;
+}
+
+static void snap_free(snap_t *s)
+{
+    if (s->buf) lv_draw_buf_destroy(s->buf);
+    *s = (snap_t){0};
+}
+
+/* Frees every picture (434 KB each) and ends a swipe that was showing them,
+ * so the tiles draw live again. */
+static void snaps_release(void)
+{
+    if (swiping) {
+        swiping = false;
+        lv_obj_add_flag(swipe_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_opa_layered(tiles, LV_OPA_COVER, 0);
+    }
+    for (int i = 0; i < SNAP_TILES; i++) snap_free(&snaps[i]);
+}
+
+/* Whether a swipe from tile a can bring in tile b. */
+static bool adjacent(lv_obj_t *a, lv_obj_t *b)
+{
+    int32_t dx = LV_ABS(lv_obj_get_x(b) - lv_obj_get_x(a)), dy = LV_ABS(lv_obj_get_y(b) - lv_obj_get_y(a));
+    return dx + dy == SCR && lv_obj_has_flag(b, LV_OBJ_FLAG_SNAPPABLE);
+}
+
+/* The first neighbour a swipe from tile `of` can bring in, for which fn
+ * holds; NULL if none. */
+static lv_obj_t *neighbour_where(lv_obj_t *of, bool (*fn)(lv_obj_t *t))
+{
+    if (!of) return NULL;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(tiles); i++) {
+        lv_obj_t *t = lv_obj_get_child(tiles, (int32_t)i);
+        if (adjacent(of, t) && fn(t)) return t;
+    }
+    return NULL;
+}
+
+static bool picture_due(lv_obj_t *t)
+{
+    snap_t *s = snap_of(t, false);
+    return !s || !s->taken || lv_tick_elaps(s->taken) >= (t == face_tile ? 1000u : 10000u);
+}
+
+static bool picture_missing(lv_obj_t *t)
+{
+    snap_t *s = snap_of(t, false);
+    return !s || !s->taken;
+}
+
+/* One picture per tick, so the UI never stalls for more than one, and none
+ * while the tiles move. Only the settled tile and its neighbours keep theirs:
+ * at most five, about 2.2 MB. */
+static void snap_tick(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (swiping || lv_obj_is_scrolling(tiles) || !home_in_view()) return;
+    lv_obj_t *cur = lv_tileview_get_tile_active(tiles);
+    for (int i = 0; i < SNAP_TILES; i++) {
+        if (snaps[i].tile && snaps[i].tile != cur && !(cur && adjacent(cur, snaps[i].tile))) snap_free(&snaps[i]);
+    }
+    snap_take(neighbour_where(cur, picture_due));
+}
+
+static void tile_pressed(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (home_in_view() && !swiping) snap_take(lv_tileview_get_tile_active(tiles));
+}
+
+/* Where tile s is on screen right now (it moves with the scroll). */
+static bool snap_area(const snap_t *s, lv_area_t *a)
+{
+    if (!s->tile || !s->taken) return false;
+    lv_obj_get_coords(s->tile, a);
+    return a->x2 >= 0 && a->y2 >= 0 && a->x1 < SCR && a->y1 < SCR;
+}
+
+static void swipe_view_event(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_COVER_CHECK) {
+        /* Covered when the pictures on screen tile the whole area asked
+         * about; at the elastic end of the row they do not. Lets LVGL skip
+         * the screen's background under them. */
+        const lv_area_t *want = lv_event_get_cover_area(e);
+        int32_t covered = 0;
+        for (int i = 0; i < SNAP_TILES; i++) {
+            lv_area_t a;
+            if (!snap_area(&snaps[i], &a)) continue;
+            int32_t w = LV_MIN(a.x2, want->x2) - LV_MAX(a.x1, want->x1) + 1;
+            int32_t h = LV_MIN(a.y2, want->y2) - LV_MAX(a.y1, want->y1) + 1;
+            if (w > 0 && h > 0) covered += w * h;
+        }
+        lv_event_set_cover_res(e, covered == (int32_t)lv_area_get_size(want) ? LV_COVER_RES_COVER : LV_COVER_RES_NOT_COVER);
+        return;
+    }
+    lv_layer_t *layer = lv_event_get_layer(e);
+    for (int i = 0; i < SNAP_TILES; i++) {
+        lv_area_t a;
+        if (!snap_area(&snaps[i], &a)) continue;
+        lv_draw_image_dsc_t d;
+        lv_draw_image_dsc_init(&d);
+        d.src = snaps[i].buf;
+        lv_draw_image(layer, &d, &a);
+    }
+}
+
+/* The tile on screen as a scroll begins. Not the active tile: a move started
+ * in code (lv_tileview_set_tile_by_index) has already made that the
+ * destination. */
+static lv_obj_t *tile_on_screen(void)
+{
+    int32_t sx = lv_obj_get_scroll_x(tiles), sy = lv_obj_get_scroll_y(tiles);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(tiles); i++) {
+        lv_obj_t *t = lv_obj_get_child(tiles, (int32_t)i);
+        if (LV_ABS(lv_obj_get_x(t) - sx) < SCR / 2 && LV_ABS(lv_obj_get_y(t) - sy) < SCR / 2) return t;
+    }
+    return NULL;
+}
+
 static void tile_scroll_begin(lv_event_t *e)
 {
     LV_UNUSED(e);
     home_sync(); /* a tile that skipped refreshes must be fresh before it slides in */
+    if (swiping) return;
+    /* Every tile that can come into view needs a picture: the destination of
+     * a move started in code (only next door: a longer move passes others),
+     * or any neighbour under a finger (the tileview moves one tile a swipe). */
+    lv_obj_t *from = tile_on_screen(), *to = lv_tileview_get_tile_active(tiles);
+    if (!from || picture_missing(from)) return; /* drawn live */
+    if (to && to != from) {
+        if (!adjacent(from, to) || picture_missing(to)) return;
+    } else if (neighbour_where(from, picture_missing)) {
+        return;
+    }
+    swiping = true;
+    lv_obj_set_style_opa_layered(tiles, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(swipe_view, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void tile_scroll_end(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    lv_timer_reset(snap_timer);
+    if (!swiping) return;
+    swiping = false;
+    lv_obj_add_flag(swipe_view, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_opa_layered(tiles, LV_OPA_COVER, 0);
 }
 
 static void tile_changed(lv_event_t *e)
@@ -719,7 +938,8 @@ static void build_tiles(void)
     quick_create(add_tile(1, 0, LV_DIR_BOTTOM));
     if (n > 0) tile_create(add_tile(0, 1, LV_DIR_RIGHT), CFG.tiles[0]);
     else lv_obj_remove_flag(add_tile(0, 1, LV_DIR_RIGHT), LV_OBJ_FLAG_SNAPPABLE);
-    watchface_create(add_tile(1, 1, n > 0 ? LV_DIR_ALL : (LV_DIR_VER | LV_DIR_RIGHT)));
+    face_tile = add_tile(1, 1, n > 0 ? LV_DIR_ALL : (LV_DIR_VER | LV_DIR_RIGHT));
+    watchface_create(face_tile);
     for (int i = 1; i < n; i++) tile_create(add_tile(i + 1, 1, i == n - 1 ? LV_DIR_LEFT : LV_DIR_HOR), CFG.tiles[i]);
     notifs_create(add_tile(1, 2, LV_DIR_TOP));
 
@@ -734,8 +954,23 @@ static void build_tiles(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_pos(d, 6 + i * 20, 2);
     }
+    /* Shows the tiles' pictures during a swipe; above the tiles, below the
+     * dots, and never in the way of a touch. */
+    swipe_view = ui_box(home_scr, SCR, SCR);
+    lv_obj_remove_flag(swipe_view, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(swipe_view, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_to_index(swipe_view, 1);
+    lv_obj_add_event_cb(swipe_view, swipe_view_event, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_add_event_cb(swipe_view, swipe_view_event, LV_EVENT_COVER_CHECK, NULL);
     lv_obj_add_event_cb(tiles, tile_changed, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(tiles, tile_scroll_begin, LV_EVENT_SCROLL_BEGIN, NULL);
+    lv_obj_add_event_cb(tiles, tile_scroll_end, LV_EVENT_SCROLL_END, NULL);
+    if (!snap_timer) {
+        /* Created once: rebuilding the tiles keeps the timer and the hook. */
+        snap_timer = lv_timer_create(snap_tick, SNAP_EVERY_MS, NULL);
+        lv_indev_t *touch = lv_indev_get_next(NULL);
+        if (touch) lv_indev_add_event_cb(touch, tile_pressed, LV_EVENT_PRESSED, NULL);
+    }
 
     lv_obj_update_layout(tiles);
     lv_tileview_set_tile_by_index(tiles, 1, 1, LV_ANIM_OFF);
@@ -744,8 +979,10 @@ static void build_tiles(void)
 
 void shell_rebuild_tiles(void)
 {
+    snaps_release();
     lv_obj_delete(tiles);
     lv_obj_delete(dots);
+    lv_obj_delete(swipe_view);
     build_tiles();
 }
 
