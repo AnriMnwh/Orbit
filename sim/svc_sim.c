@@ -138,6 +138,11 @@ void svc_link_forget(void)
     bus_emit(EVT_LINK, NULL);
 }
 
+void svc_pair_answer(bool accept)
+{
+    printf("[sim] pairing %s\n", accept ? "accepted" : "refused");
+}
+
 void svc_media(media_cmd_t cmd)
 {
     if (cmd == MEDIA_TOGGLE) S.media.playing = !S.media.playing;

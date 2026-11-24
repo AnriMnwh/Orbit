@@ -285,6 +285,13 @@ class WatchLink(
             bulkIn = bulkService?.getCharacteristic(Link.BULK_IN)
             bulkService?.getCharacteristic(Link.BULK_OUT)?.let { control += Subscribe(it) }
             control += Then {
+                // The watch only lets a phone it paired with (the owner confirmed
+                // the number on both screens) subscribe; anything else is not it.
+                if (g.device.bondState != BluetoothDevice.BOND_BONDED) {
+                    Log.w(TAG, "the watch is not paired with this phone")
+                    reopenSoon()
+                    return@Then
+                }
                 backoffMs = RECONNECT_MIN_MS
                 up = true
                 events.onUp()
@@ -293,7 +300,14 @@ class WatchLink(
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (g === gatt) finished()
+            if (g !== gatt) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                // Usually pairing was declined or not finished; Android asks again next time.
+                Log.w(TAG, "the watch refused the subscription ($status)")
+                reopenSoon()
+                return
+            }
+            finished()
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {

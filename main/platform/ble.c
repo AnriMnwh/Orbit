@@ -10,11 +10,18 @@
  *
  * They are kept apart because a phone that sees a keyboard hides its
  * on-screen keyboard. Only the services of the active device are visible.
+ *
+ * Pairing is LE Secure Connections with confirmation: the watch and the other
+ * device show the same six-digit number and the owner accepts it on the watch
+ * (shell_pairing). Everything except the standard Device Information and
+ * Battery services needs a link encrypted with keys from such a pairing, so a
+ * device nearby cannot send to, read from or listen to the watch on its own.
  */
 #include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -42,7 +49,11 @@ void ble_store_config_init(void);
 #define APPEARANCE_KEYBOARD 0x03C1
 
 static uint16_t conn = BLE_HS_CONN_HANDLE_NONE;
+/* encrypted: the link is encrypted with keys from a confirmed pairing. */
 static bool synced, keys_mode, want_keys, encrypted, gb_seen, app_mode;
+static bool nus_sub;                 /* the phone listens on the serial link */
+static volatile bool pair_numcmp;    /* the pairing in progress asks the owner to confirm a number */
+static volatile bool pair_prompted;  /* a pairing prompt is on screen */
 /* The battery as the UI last reported it, for Bluetooth's task to read. */
 static volatile int batt_pct = -1;
 static volatile bool batt_chg, batt_sub; /* batt_sub: the phone listens for battery changes */
@@ -163,42 +174,46 @@ static int nus_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ct
 static bool notify(uint16_t handle, const void *data, size_t len);
 static int bulk_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
 
-#define ENC_READ (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC)
+/* See the top of this file: confirmed pairing for everything but the
+ * standard Device Information and Battery services. */
+#define SECURE_READ (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN)
+#define SECURE_WRITE (BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_WRITE_AUTHEN)
+#define SECURE_NOTIFY (BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC | BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN)
 
 static const struct ble_gatt_svc_def SERVICES[] = {
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &U_NUS.u,
      .characteristics = (struct ble_gatt_chr_def[]){
-         {.uuid = &U_NUS_RX.u, .access_cb = nus_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP},
-         {.uuid = &U_NUS_TX.u, .access_cb = nus_access, .val_handle = &nus_tx_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
+         {.uuid = &U_NUS_RX.u, .access_cb = nus_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | SECURE_WRITE},
+         {.uuid = &U_NUS_TX.u, .access_cb = nus_access, .val_handle = &nus_tx_handle, .flags = SECURE_NOTIFY},
          {0}}},
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = BLE_UUID16_DECLARE(0x1812),
      .characteristics = (struct ble_gatt_chr_def[]){
-         {.uuid = BLE_UUID16_DECLARE(0x2A4A), .access_cb = hid_access, .arg = (void *)HID_INFO_CHR, .flags = ENC_READ},
-         {.uuid = BLE_UUID16_DECLARE(0x2A4B), .access_cb = hid_access, .arg = (void *)HID_MAP_CHR, .flags = ENC_READ},
+         {.uuid = BLE_UUID16_DECLARE(0x2A4A), .access_cb = hid_access, .arg = (void *)HID_INFO_CHR, .flags = SECURE_READ},
+         {.uuid = BLE_UUID16_DECLARE(0x2A4B), .access_cb = hid_access, .arg = (void *)HID_MAP_CHR, .flags = SECURE_READ},
          {.uuid = BLE_UUID16_DECLARE(0x2A4C), .access_cb = hid_access, .arg = (void *)HID_CTRL_CHR,
-          .flags = BLE_GATT_CHR_F_WRITE_NO_RSP},
+          .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | SECURE_WRITE},
          {.uuid = BLE_UUID16_DECLARE(0x2A4E), .access_cb = hid_access, .arg = (void *)HID_PROTO_CHR,
-          .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE_NO_RSP},
+          .flags = SECURE_READ | BLE_GATT_CHR_F_WRITE_NO_RSP | SECURE_WRITE},
          {.uuid = BLE_UUID16_DECLARE(0x2A4D), .access_cb = hid_access, .arg = (void *)HID_KBD_IN, .val_handle = &kbd_handle,
-          .flags = ENC_READ | BLE_GATT_CHR_F_NOTIFY,
+          .flags = SECURE_READ | SECURE_NOTIFY,
           .descriptors = (struct ble_gatt_dsc_def[]){
               {.uuid = BLE_UUID16_DECLARE(0x2908), .att_flags = BLE_ATT_F_READ, .access_cb = ref_access, .arg = (void *)REF_KBD_IN},
               {0}}},
          {.uuid = BLE_UUID16_DECLARE(0x2A4D), .access_cb = hid_access, .arg = (void *)HID_KBD_OUT,
-          .flags = ENC_READ | BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+          .flags = SECURE_READ | BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | SECURE_WRITE,
           .descriptors = (struct ble_gatt_dsc_def[]){
               {.uuid = BLE_UUID16_DECLARE(0x2908), .att_flags = BLE_ATT_F_READ, .access_cb = ref_access, .arg = (void *)REF_KBD_OUT},
               {0}}},
          {.uuid = BLE_UUID16_DECLARE(0x2A4D), .access_cb = hid_access, .arg = (void *)HID_CONSUMER_IN,
-          .val_handle = &consumer_handle, .flags = ENC_READ | BLE_GATT_CHR_F_NOTIFY,
+          .val_handle = &consumer_handle, .flags = SECURE_READ | SECURE_NOTIFY,
           .descriptors = (struct ble_gatt_dsc_def[]){
               {.uuid = BLE_UUID16_DECLARE(0x2908), .att_flags = BLE_ATT_F_READ, .access_cb = ref_access, .arg = (void *)REF_CONSUMER_IN},
               {0}}},
          {0}}},
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &U_BULK.u,
      .characteristics = (struct ble_gatt_chr_def[]){
-         {.uuid = &U_BULK_RX.u, .access_cb = bulk_access, .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC},
-         {.uuid = &U_BULK_TX.u, .access_cb = bulk_access, .val_handle = &bulk_tx_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
+         {.uuid = &U_BULK_RX.u, .access_cb = bulk_access, .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | SECURE_WRITE},
+         {.uuid = &U_BULK_TX.u, .access_cb = bulk_access, .val_handle = &bulk_tx_handle, .flags = SECURE_NOTIFY},
          {0}}},
     {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = BLE_UUID16_DECLARE(0x180A),
      .characteristics = (struct ble_gatt_chr_def[]){
@@ -318,22 +333,24 @@ static int bulk_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *c
     return 0;
 }
 
+/* Lines and frames for the phone go out only on a link from a confirmed
+ * pairing (the stack would refuse the subscription otherwise anyway). */
 void gb_send(const char *json)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !gb_seen) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !gb_seen || !encrypted) return;
     tx_push(nus_tx_handle, json, strlen(json), '\n', false);
 }
 
 /* The same, for a line that must not be lost behind a stream of bulk frames. */
 void gb_send_wait(const char *json)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !gb_seen) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !gb_seen || !encrypted) return;
     tx_push(nus_tx_handle, json, strlen(json), '\n', true);
 }
 
 void ble_tx_bulk(const uint8_t *frame, size_t len, bool wait)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || keys_mode || !encrypted) return;
     tx_push(bulk_tx_handle, frame, len, 0, wait);
 }
 
@@ -526,13 +543,70 @@ static int name_read(uint16_t c, const struct ble_gatt_error *err, struct ble_ga
     return 0;
 }
 
-/* Ask to pair unless the other side turned out to be Gadgetbridge, which
- * neither needs nor expects it. */
+/* ---- pairing ---- */
+
+typedef struct {
+    uint32_t number;
+    bool confirm;
+} pair_prompt_t;
+
+static void pair_prompt_apply(void *arg)
+{
+    pair_prompt_t *p = arg;
+    shell_pairing(p->number, p->confirm);
+    free(p);
+}
+
+static void pair_done_apply(void *arg)
+{
+    LV_UNUSED(arg);
+    shell_pairing_done();
+}
+
+static void pair_prompt(uint32_t number, bool confirm)
+{
+    pair_prompt_t *p = malloc(sizeof(*p));
+    if (!p) return; /* no prompt means no answer: the pairing times out */
+    p->number = number, p->confirm = confirm;
+    pair_numcmp = confirm;
+    pair_prompted = true;
+    if (!ui_post(pair_prompt_apply, p)) free(p);
+}
+
+static void pair_finished(void)
+{
+    if (!pair_prompted) return;
+    pair_prompted = false;
+    ui_post(pair_done_apply, NULL);
+}
+
+/* The owner's answer from the prompt (LVGL thread). */
+void svc_pair_answer(bool accept)
+{
+    uint16_t c = conn;
+    if (c == BLE_HS_CONN_HANDLE_NONE) return;
+    if (pair_numcmp) {
+        struct ble_sm_io io = {.action = BLE_SM_IOACT_NUMCMP, .numcmp_accept = accept ? 1 : 0};
+        ble_sm_inject_io(c, &io);
+    } else if (!accept) {
+        ble_gap_terminate(c, BLE_ERR_REM_USER_CONN_TERM);
+    }
+}
+
+/* Every peer is asked to pair shortly after it connects: the Orbit app,
+ * Gadgetbridge, an iPhone or a computer using the keyboard. */
 static void secure_cb(void *arg)
 {
     LV_UNUSED(arg);
-    if (conn == BLE_HS_CONN_HANDLE_NONE || encrypted || gb_seen) return;
+    if (conn == BLE_HS_CONN_HANDLE_NONE || encrypted) return;
     ble_gap_security_initiate(conn);
+}
+
+/* The serial link is ready once the phone listens and the link is private. */
+static void nus_ready_changed(bool was_ready)
+{
+    bool ready = nus_sub && encrypted;
+    if (ready != was_ready) gb_connected(ready);
 }
 
 static int on_gap(struct ble_gap_event *ev, void *arg)
@@ -550,7 +624,7 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
             break;
         }
         conn = ev->connect.conn_handle;
-        encrypted = false, gb_seen = false, batt_sub = false;
+        encrypted = false, gb_seen = false, batt_sub = false, nus_sub = false;
         peer = keys_mode ? PEER_KEYS : PEER_NONE;
         peer_name[0] = 0;
         publish();
@@ -561,7 +635,8 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         if (ev->disconnect.conn.conn_handle != conn) break; /* not the link we are serving */
         conn = BLE_HS_CONN_HANDLE_NONE;
-        encrypted = false, gb_seen = false, app_mode = false, batt_sub = false;
+        encrypted = false, gb_seen = false, app_mode = false, batt_sub = false, nus_sub = false;
+        pair_finished();
         apple_stop();
         link_reset();
         gb_connected(false);
@@ -569,13 +644,46 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
         advertise();
         break;
 
-    case BLE_GAP_EVENT_ENC_CHANGE:
-        if (ev->enc_change.conn_handle != conn || ev->enc_change.status != 0) break;
+    case BLE_GAP_EVENT_PASSKEY_ACTION: {
+        if (ev->passkey.conn_handle != conn) break;
+        struct ble_sm_io io = {.action = ev->passkey.params.action};
+        if (io.action == BLE_SM_IOACT_NUMCMP) {
+            pair_prompt(ev->passkey.params.numcmp, true);
+        } else if (io.action == BLE_SM_IOACT_DISP) {
+            /* The other side has a keyboard but no screen to compare on. */
+            io.passkey = esp_random() % 1000000u;
+            ble_sm_inject_io(conn, &io);
+            pair_prompt(io.passkey, false);
+        } else {
+            ESP_LOGW(TAG, "pairing method %d is not offered", io.action);
+        }
+        break;
+    }
+
+    case BLE_GAP_EVENT_ENC_CHANGE: {
+        if (ev->enc_change.conn_handle != conn) break;
+        pair_finished();
+        if (ev->enc_change.status != 0) {
+            ESP_LOGW(TAG, "pairing or encryption failed: %d", ev->enc_change.status);
+            break;
+        }
+        if (ble_gap_conn_find(conn, &desc) != 0) break;
+        if (!desc.sec_state.authenticated || desc.sec_state.key_size < 16) {
+            /* Keys from before pairing needed the owner's say-so. Ask for a
+             * confirmed pairing: the other side sees its keys are too weak and
+             * pairs again, and REPEAT_PAIRING below replaces the old ones. */
+            ESP_LOGW(TAG, "peer was paired without confirmation: asking it to pair again");
+            ble_gap_security_initiate(conn);
+            break;
+        }
+        bool was_ready = nus_sub && encrypted;
         encrypted = true;
         link_encrypted(); /* the Orbit app's hello may be waiting for this */
+        nus_ready_changed(was_ready);
         ble_gattc_read_by_uuid(conn, 1, 0xFFFF, BLE_UUID16_DECLARE(0x2A00), name_read, NULL);
         if (!keys_mode) apple_start(conn);
         break;
+    }
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
         /* The other side forgot us: drop our old keys and pair afresh. */
@@ -584,8 +692,13 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
 
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (ev->subscribe.conn_handle != conn) break;
-        if (ev->subscribe.attr_handle == nus_tx_handle) gb_connected(ev->subscribe.cur_notify);
-        else if (ev->subscribe.attr_handle == batt_handle) batt_sub = ev->subscribe.cur_notify;
+        if (ev->subscribe.attr_handle == nus_tx_handle) {
+            bool was_ready = nus_sub && encrypted;
+            nus_sub = ev->subscribe.cur_notify;
+            nus_ready_changed(was_ready);
+        } else if (ev->subscribe.attr_handle == batt_handle) {
+            batt_sub = ev->subscribe.cur_notify;
+        }
         break;
 
     case BLE_GAP_EVENT_NOTIFY_RX: {
@@ -794,9 +907,11 @@ void ble_init(void)
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_YES_NO;
     ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 1;
     ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_sc_only = 1; /* every phone and computer since 2016 supports it */
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
 

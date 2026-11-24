@@ -75,7 +75,7 @@ Download the latest release assets from the [**Releases**](https://github.com/An
    - An OTA update keeps the watch's partition table. Watches first flashed before settings storage grew to 56 KB keep the original 24 KB until they are flashed once over USB; that flash moves every setting, pairing and saved network across by itself, and photos stay where they are.
 
 3. **Android companion app** (optional):
-   - Install `orbit-companion-v0.1.0.apk` on Android 13+ (API 33+), grant Bluetooth and notification access, and tap **Pair watch**.
+   - Install `orbit-companion-v0.1.0.apk` on Android 13+ (API 33+), grant Bluetooth and notification access, and tap **Pair watch**. Confirm the six-digit number shown on both the phone and the watch.
 
 ## First-Time Setup & Web Setup Page
 
@@ -123,7 +123,7 @@ Compiles `main/core`, `main/ui`, and `main/apps` natively with LVGL against mock
 - **Verified on hardware**: CO5300 QSPI AMOLED display (466×466), CST9217 touch, AXP2101 PMIC (battery, power button, 80% charge limit), QMI8658 IMU, ES8311 speaker + ES7210 dual mics, Wi-Fi, mDNS (`orbit.local`), BLE NimBLE advertising, and internal DMA double buffering (~46 KB free internal RAM + ~8 MB free PSRAM at boot).
 - **Power**: CPU frequency scaling (80–240 MHz) and display rest/AoD are active; deep/light sleep with radio wake is planned for a future release.
 - **Haptics**: The Waveshare 1.75C board has no vibration motor, so alerts use the onboard speaker.
-- **Security**: The watch web server enforces same-origin checks on state-changing API endpoints, sets strict CSP/security headers, zeroes secret buffers after use, and gates OTA behind a 5-minute physical approval window.
+- **Security**: Every Bluetooth peer (Orbit app, Gadgetbridge, iPhone, or a computer using Orbit Keys) must pair with LE Secure Connections and a six-digit number confirmed on the watch before it can read, write or subscribe to anything beyond Device Information and Battery. The watch web server enforces same-origin checks on state-changing API endpoints, sets strict CSP/security headers, zeroes secret buffers after use, and gates OTA behind a 5-minute physical approval window.
 
 ## Project Layout
 

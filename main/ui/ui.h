@@ -130,6 +130,10 @@ void tile_create(lv_obj_t *tile, int kind); /* builds one of the TILE_ kinds */
 extern const app_t app_faces, app_welcome;
 void shell_confirm(const char *question, const char *yes, lv_event_cb_t on_yes);
 void shell_alert(const char *title, const char *text);
+/* Bluetooth pairing prompt: the six-digit number, and whether the owner is
+ * asked to confirm it (true) or to type it on the other device (false). */
+void shell_pairing(uint32_t number, bool confirm);
+void shell_pairing_done(void); /* pairing ended either way: close the prompt */
 
 void agent_listen_on_open(void);    /* next time the assistant opens, start listening */
 void timer_start(int seconds);

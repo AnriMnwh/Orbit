@@ -200,6 +200,16 @@ static void scenarios(void)
     shot("11_power");
     shell_back();
 
+    shell_pairing(482917, true);
+    sim_run(200);
+    shot("11b_pair_confirm");
+    shell_pairing_done();
+    shell_pairing(31406, false);
+    sim_run(200);
+    shot("11c_pair_passkey");
+    shell_pairing_done();
+    sim_run(100);
+
     CFG.aod_mode = AOD_CLOCK;
     shell_rest();
     sim_run(200);

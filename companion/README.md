@@ -48,8 +48,9 @@ folders to avoid file-locking issues during Gradle builds). Requires the Android
 SDK (compileSdk 37) and JDK 21.
 
 On the phone: open Orbit, allow Bluetooth, tap **Pair watch** and pick
-"Orbit", then grant notification access. The watch must be in its normal
-phone mode, not Keys or MIDI.
+"Orbit". Both screens show the same six-digit number: accept it on the phone
+and tap **Pair** on the watch. Then grant notification access. The watch must
+be in its normal phone mode, not Keys. Gadgetbridge pairs the same way.
 
 ## What has and has not been tested
 

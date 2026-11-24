@@ -538,10 +538,10 @@ bool link_handle(const char *type, cJSON *msg)
             else if (strcmp(cap, "busy") == 0) hello_caps |= LINK_CAP_BUSY;
             else if (strcmp(cap, "day") == 0) hello_caps |= LINK_CAP_DAY;
         }
-        /* Unlike Gadgetbridge, this link is encrypted. The answer waits for
-         * that, so to the app "hello answered" also means pictures and speech
-         * are safe to send. If pairing is declined there is no answer, and
-         * both sides carry on as they would with Gadgetbridge. */
+        /* The serial link only accepts writes once pairing was confirmed on
+         * the watch (ble.c), so this normally arrives on a private link and is
+         * answered at once; the check stays so "hello answered" always means
+         * pictures and speech are safe to send. */
         hello_due = true;
         ble_request_pairing();
         if (ble_encrypted()) link_encrypted();

@@ -461,6 +461,76 @@ void shell_alert(const char *title, const char *text)
     lv_obj_align(ok, LV_ALIGN_CENTER, 0, 96);
 }
 
+/* ---- Bluetooth pairing ----
+ * A phone, computer or Gadgetbridge pairing with the watch shows the same
+ * six-digit number on both screens; the owner confirms it here. Nothing can
+ * pair without that, so nothing nearby can talk to the watch on its own. */
+
+static lv_obj_t *pair_overlay;
+static bool pair_answered;
+
+static void pair_answer(bool accept)
+{
+    if (pair_answered) return;
+    pair_answered = true;
+    svc_pair_answer(accept);
+}
+
+static void pair_deleted(lv_event_t *e)
+{
+    /* Swiped away or replaced without an answer: that is a no. */
+    if (lv_event_get_target_obj(e) != pair_overlay) return;
+    pair_overlay = NULL;
+    pair_answer(false);
+}
+
+static void pair_clicked(lv_event_t *e)
+{
+    bool accept = lv_event_get_user_data(e) != NULL;
+    pair_answer(accept);
+    if (!accept) {
+        overlay_close();
+        return;
+    }
+    /* The other side may still be waiting for its owner; shell_pairing_done() closes this. */
+    lv_obj_t *o = pair_overlay;
+    lv_obj_clean(o);
+    lv_obj_center(ui_label(o, "Pairing...", F28, C_TEXT));
+}
+
+void shell_pairing(uint32_t number, bool confirm)
+{
+    S.theatre = false;
+    shell_wake();
+    lv_obj_t *o = overlay_open();
+    pair_overlay = o, pair_answered = false;
+    lv_obj_add_event_cb(o, pair_deleted, LV_EVENT_DELETE, NULL);
+    lv_obj_align(ui_label(o, "BLUETOOTH PAIRING", F16, C_DIM), LV_ALIGN_TOP_MID, 0, 64);
+    char digits[8];
+    snprintf(digits, sizeof(digits), "%06u", (unsigned)(number % 1000000u));
+    lv_obj_t *n = ui_label(o, digits, F48, C_TEXT);
+    lv_obj_set_style_text_letter_space(n, 6, 0);
+    lv_obj_align(n, LV_ALIGN_CENTER, 0, -100);
+    lv_obj_t *t = ui_label(o, confirm ? "Pair if the other screen shows the same number" : "Type this number on the other device",
+                           F20, C_DIM);
+    lv_obj_set_width(t, 320);
+    lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(t, LV_ALIGN_CENTER, 0, -34);
+    if (confirm) {
+        lv_obj_t *y = ui_pill_btn(o, "Pair", ui_accent(), lv_color_black(), pair_clicked, (void *)1);
+        lv_obj_align(y, LV_ALIGN_CENTER, 0, 44);
+    }
+    lv_obj_t *x = ui_pill_btn(o, "Cancel", C_SURF2, C_TEXT, pair_clicked, NULL);
+    lv_obj_align(x, LV_ALIGN_CENTER, 0, confirm ? 116 : 60);
+}
+
+void shell_pairing_done(void)
+{
+    pair_answered = true; /* finished either way: closing is not a refusal */
+    if (pair_overlay && pair_overlay == overlay) overlay_close();
+    pair_overlay = NULL;
+}
+
 static void do_power_off(lv_event_t *e)
 {
     LV_UNUSED(e);

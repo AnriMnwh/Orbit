@@ -31,12 +31,18 @@ Bulk characteristics, visible only in the "Orbit" phone identity:
 | `4f524249-5400-4c4e-8b00-000000000002` | phone to watch | write without response |
 | `4f524249-5400-4c4e-8b00-000000000003` | watch to phone | notify |
 
-The watch starts pairing as soon as it sees the app's hello (it does not for
-Gadgetbridge, which never bonds). The phone-to-watch bulk characteristic needs
-an encrypted link. Because it is written without a response, a frame sent
-before encryption is up is thrown away with no error. The rule that makes this
-safe: the watch answers the hello only once the link is encrypted, and the app
-sends nothing bulk-related, not even a `blob` line, until it has that answer.
+Every phone pairs before anything flows, Gadgetbridge included: the watch asks
+shortly after it connects, and the owner confirms the same six-digit number on
+the watch and the phone (LE Secure Connections, numeric comparison). Writing
+either phone-to-watch characteristic and subscribing to either watch-to-phone
+one needs a link encrypted with keys from that confirmed pairing; the stack
+refuses anything else, and the watch sends nothing until then. A phone bonded
+by older firmware, which paired without confirmation, is asked to pair again.
+Bulk frames are written without a response, so a frame sent before the link
+is ready is thrown away with no error. The rule that makes this safe: the
+watch answers the hello only once the link is paired and encrypted, and the
+app sends nothing bulk-related, not even a `blob` line, until it has that
+answer.
 
 The app asks for the largest packet size; the watch accepts up to 256 bytes
 and never asks first. Assume the slow 1M radio mode until measured.
@@ -83,7 +89,7 @@ watch: {"t":"orbit","v":1,"fw":"Orbit 0.9","caps":["art","music2","agent"],
 bytes.
 
 - On the hello the watch asks to pair, then answers at once if the link is
-  already encrypted, otherwise when encryption comes up. Its answer is two
+  already paired and encrypted, otherwise when that comes up. Its answer is two
   lines: this one, then the assistant's tool list (see below).
 - Until the watch answers, each side treats the other as plain Gadgetbridge:
   no extras in either direction.

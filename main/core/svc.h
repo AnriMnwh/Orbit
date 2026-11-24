@@ -43,6 +43,7 @@ void svc_media_seek(int seconds);          /* jump to a position in the track */
 const lv_image_dsc_t *svc_album_art(void);
 void svc_link_keys_mode(bool on);
 void svc_link_forget(void);            /* drop all pairings */
+void svc_pair_answer(bool accept);    /* the owner's answer to shell_pairing() */
 void svc_media(media_cmd_t cmd);
 void svc_hid_keys(uint8_t mods, uint8_t key);
 void svc_hid_text(const char *text);
