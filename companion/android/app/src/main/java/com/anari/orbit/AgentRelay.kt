@@ -48,6 +48,9 @@ class AgentRelay(
     private val waiting = ConcurrentHashMap<Int, CompletableDeferred<String>>()
     private var nextCall = 1
 
+    /** A spoken reply was started and the link went away before the watch heard that it was over. */
+    private var doneOwed = false
+
     fun reset() {
         turn?.cancel()
         turn = null
@@ -55,6 +58,15 @@ class AgentRelay(
         waiting.clear()
         tools = null
         enabled = false
+        synchronized(history) { history.clear() }
+        question = PcmBuffer(MAX_SECONDS * rate)
+    }
+
+    /** The watch has said hello again: tell it about a reply that ended while the link was down. */
+    fun linkUp() {
+        if (!doneOwed) return
+        doneOwed = false
+        link.send(JSONObject().put("t", "agent").put("n", "done"))
     }
 
     // ---------------------------------------------------------- from the watch
@@ -88,6 +100,7 @@ class AgentRelay(
     }
 
     private fun cancel() {
+        doneOwed = false // the watch has given up on that reply itself
         turn?.cancel()
         turn = null
         incoming.close()
@@ -198,9 +211,12 @@ class AgentRelay(
                 JSONObject().put("t", "agent").put("n", "speak").put("rate", SPEECH_RATE).put("codec", "ima")
                     .put("len", frames.sumOf { it.size }),
             )
-            link.sendBulk(Link.frames(Link.KIND_SPEECH, frames)) {
+            val queued = link.sendBulk(Link.frames(Link.KIND_SPEECH, frames)) {
+                doneOwed = false
                 link.send(JSONObject().put("t", "agent").put("n", "done"))
             }
+            if (queued) doneOwed = true
+            else link.send(JSONObject().put("t", "agent").put("n", "done"))
         }
     }
 

@@ -142,7 +142,7 @@ object Messages {
     /** The watch already reads this one (it is Gadgetbridge's), with temperatures in kelvin. */
     fun weather(report: WeatherReport): JSONObject = JSONObject().put("t", "weather")
         .put("temp", kelvin(report.temp)).put("hi", kelvin(report.high)).put("lo", kelvin(report.low))
-        .put("txt", report.text).put("code", report.code)
+        .put("txt", report.text)
 
     private fun kelvin(celsius: Double) = ((celsius + 273.15) * 100).roundToInt() / 100.0
 

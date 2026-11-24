@@ -78,6 +78,17 @@ object Link {
         }
     }
 
+    /** Cuts [data] into frames in one pass: the kind and sequence number, then up to [room] payload bytes. */
+    fun frames(kind: Int, data: ByteArray, room: Int): List<ByteArray> =
+        (data.indices step room).mapIndexed { i, from ->
+            val to = minOf(from + room, data.size)
+            ByteArray(to - from + 2).also {
+                it[0] = kind.toByte()
+                it[1] = (i and 0xFF).toByte()
+                data.copyInto(it, 2, from, to)
+            }
+        }
+
     /** Shortens text to what a watch field holds, without cutting a character pair in half. */
     fun clip(text: String, maxChars: Int): String {
         if (text.length <= maxChars) return text

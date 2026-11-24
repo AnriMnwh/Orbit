@@ -12,15 +12,26 @@ object OtaUpdater {
     private const val MIN_BYTES = 100_000L
     private const val MAX_BYTES = 4_194_304L
 
+    private val hostPort = Regex("^([a-z0-9.]+)(?::(\\d{1,5}))?$")
+
+    /**
+     * True only for `orbit.local` or a literal private IPv4 address, with an optional port. The
+     * whole string is matched, so userinfo ("10.0.0.1@evil.com"), paths and look-alike names
+     * ("192.168.evil.com") never get through to the URL.
+     */
     fun isLocalHost(host: String): Boolean {
-        val clean = host.trim().lowercase().substringBefore(':')
-        if (clean == "orbit.local") return true
-        if (clean.startsWith("192.168.") || clean.startsWith("10.")) return true
-        if (clean.startsWith("172.")) {
-            val second = clean.removePrefix("172.").substringBefore('.').toIntOrNull() ?: return false
-            return second in 16..31
-        }
-        return false
+        val match = hostPort.matchEntire(host.trim().lowercase()) ?: return false
+        val port = match.groupValues[2]
+        if (port.isNotEmpty() && port.toInt() !in 1..65535) return false
+        val name = match.groupValues[1]
+        if (name == "orbit.local") return true
+        val parts = name.split('.')
+        if (parts.size != 4) return false
+        val octets = parts.map { p -> if (p.isEmpty() || p.length > 3) return false else p.toIntOrNull() ?: return false }
+        if (octets.any { it !in 0..255 }) return false
+        return octets[0] == 10 ||
+            (octets[0] == 192 && octets[1] == 168) ||
+            (octets[0] == 172 && octets[1] in 16..31)
     }
 
     fun fileName(context: Context, uri: Uri): String {
@@ -64,6 +75,7 @@ object OtaUpdater {
                 }
                 try {
                     var sent = 0L
+                    var lastPercent = 0
                     conn.outputStream.use { out ->
                         out.write(buf, 0, first)
                         sent += first
@@ -73,7 +85,12 @@ object OtaUpdater {
                             if (n <= 0) break
                             out.write(buf, 0, n)
                             sent += n
-                            withContext(Dispatchers.Main) { onProgress((sent.toFloat() / size).coerceIn(0f, 0.99f)) }
+                            // One hop to the main thread per percent, not per 8 KB chunk.
+                            val percent = (sent * 100 / size).toInt().coerceAtMost(99)
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                withContext(Dispatchers.Main) { onProgress(percent / 100f) }
+                            }
                         }
                         out.flush()
                     }

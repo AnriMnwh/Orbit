@@ -4,5 +4,4 @@
     <string name="channel_link">Watch connection</string>
     <string name="link_connected">Connected to your watch</string>
     <string name="link_waiting">Waiting for your watch</string>
-    <string name="link_unpaired">No watch paired</string>
 </resources>

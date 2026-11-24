@@ -143,7 +143,11 @@ private object Secrets {
     private const val ALIAS = "orbit.secrets"
     private const val TRANSFORM = "AES/GCM/NoPadding"
 
-    private fun key(): SecretKey {
+    @Volatile private var cached: SecretKey? = null
+
+    private fun key(): SecretKey = cached ?: load().also { cached = it }
+
+    private fun load(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(ALIAS, null) as? SecretKey)?.let { return it }
         val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)

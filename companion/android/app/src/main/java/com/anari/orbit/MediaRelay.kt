@@ -26,7 +26,11 @@ import android.util.Log
 import android.view.KeyEvent
 import com.anari.orbit.link.Link
 import com.anari.orbit.link.WatchLink
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -44,6 +48,7 @@ class MediaRelay(
     private val context: Context,
     private val handler: Handler,
     private val link: WatchLink,
+    private val scope: CoroutineScope,
 ) {
     /** The picture the watch asked for in its hello. */
     data class ArtSpec(val width: Int, val height: Int, val maxBytes: Int)
@@ -61,6 +66,10 @@ class MediaRelay(
     private var info = JSONObject()
     private var artJpeg: ByteArray? = null
     private var artKey = ""
+
+    // Preparing a picture takes a while, so it runs off the link thread; only the newest track's result is used.
+    private var artJob: Job? = null
+    private var artGeneration = 0
 
     // What the watch has been told on this connection.
     private var sentInfo = ""
@@ -119,6 +128,8 @@ class MediaRelay(
         }
         controller?.unregisterCallback(playerEvents)
         controller = null
+        artJob?.cancel()
+        artGeneration++
         sentInfo = ""
         sentState = ""
         deliveredArt = null
@@ -164,16 +175,6 @@ class MediaRelay(
         )
         val seconds = (metadata?.getLong(MediaMetadataCompat.METADATA_KEY_DURATION) ?: 0L).coerceAtLeast(0) / 1000
 
-        val spec = artSpec
-        val picture = try {
-            if (spec != null && metadata != null) findPicture(metadata)?.let { Art.fit(it, spec.width, spec.height) } else null
-        } catch (e: Exception) {
-            Log.w(TAG, "could not prepare the album art: $e")
-            null
-        }
-        artJpeg = picture?.let { Art.jpeg(it, spec!!.maxBytes) }
-        artKey = artJpeg?.let(Link::crc32Hex) ?: ""
-
         // Field lengths match what the watch keeps (main/core/orbit.h).
         info = JSONObject().put("t", "musicinfo")
             .put("artist", Link.clip(artist, 47))
@@ -181,12 +182,43 @@ class MediaRelay(
             .put("track", Link.clip(title, 63))
             .put("dur", seconds)
             .put("app", controller?.packageName?.let(::appName) ?: "")
-            .put("art", artKey)
-        Hub.state.update { it.copy(track = title, artist = artist, art = picture) }
-        schedule()
+            .put("art", "")
+        artJpeg = null
+        artKey = ""
+        Hub.state.update { it.copy(track = title, artist = artist, art = null) }
+
+        artJob?.cancel()
+        val generation = ++artGeneration
+        val spec = artSpec
+        if (spec == null || metadata == null) return schedule()
+        // Decoding and encoding the picture can take a while; keep the link thread free for frames meanwhile.
+        artJob = scope.launch(Dispatchers.Default) {
+            val picture = try {
+                findPicture(metadata, maxOf(spec.width, spec.height))?.let { Art.fit(it, spec.width, spec.height) }
+            } catch (e: Exception) {
+                Log.w(TAG, "could not prepare the album art: $e")
+                null
+            }
+            var jpeg = picture?.let { Art.jpeg(it, spec.maxBytes) }
+            // The watch wants exactly its own picture size, so a file over its limit cannot be shrunk to fit.
+            if (jpeg != null && jpeg.size > spec.maxBytes) {
+                Log.w(TAG, "the album art is ${jpeg.size} bytes, over the watch's ${spec.maxBytes}; not sent")
+                jpeg = null
+            }
+            val key = jpeg?.let(Link::crc32Hex) ?: ""
+            handler.post {
+                if (generation != artGeneration) return@post
+                artJpeg = jpeg
+                artKey = key
+                info.put("art", key)
+                Hub.state.update { it.copy(art = picture) }
+                schedule()
+            }
+        }
     }
 
-    private fun findPicture(metadata: MediaMetadataCompat): Bitmap? {
+    /** The first picture the player offers, decoded no larger than the watch needs ([target] pixels). */
+    private fun findPicture(metadata: MediaMetadataCompat, target: Int): Bitmap? {
         for (key in listOf(
             MediaMetadataCompat.METADATA_KEY_ALBUM_ART,
             MediaMetadataCompat.METADATA_KEY_ART,
@@ -201,12 +233,24 @@ class MediaRelay(
             val uri = metadata.getString(key)?.let(Uri::parse) ?: continue
             if (uri.scheme != "content" && uri.scheme != "file" && uri.scheme != "android.resource") continue
             try {
-                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }?.let { return it }
+                decodeSmall(uri, target)?.let { return it }
             } catch (e: Exception) {
                 Log.i(TAG, "could not read the picture at $uri")
             }
         }
         return null
+    }
+
+    /** Reads the size first, then decodes at the largest reduction that still leaves [target] pixels on the short side. */
+    private fun decodeSmall(uri: Uri, target: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        val shortSide = minOf(bounds.outWidth, bounds.outHeight)
+        if (shortSide <= 0) return null
+        var sample = 1
+        while (shortSide / (sample * 2) >= target) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
     }
 
     /** Players report in bursts; wait for the burst to end before telling the watch. */
@@ -288,18 +332,19 @@ class MediaRelay(
      */
     fun sendArt() {
         val jpeg = artJpeg ?: return
-        if (artSpec == null || !link.bulkReady || sendingArt != null || artKey == deliveredArt) return
+        if (artSpec == null || !link.canSendBulk || sendingArt != null || artKey == deliveredArt) return
         if (artKey != triedArt) {
             triedArt = artKey
             artTries = 0
         }
-        if (++artTries > 3) return
+        if (artTries >= 3) return
+        val blob = JSONObject().put("t", "blob").put("kind", "art").put("key", artKey)
+            .put("len", jpeg.size).put("crc", Link.crc32Hex(jpeg))
+        link.send(blob)
+        // Only a picture that is really on its way counts as tried and in flight.
+        if (!link.sendBulk(Link.frames(Link.KIND_ART, jpeg, Link.frameRoom(link.mtu)))) return
+        artTries++
         sendingArt = artKey
-        link.send(
-            JSONObject().put("t", "blob").put("kind", "art").put("key", artKey)
-                .put("len", jpeg.size).put("crc", Link.crc32Hex(jpeg)),
-        )
-        link.sendBulk(Link.frames(Link.KIND_ART, Link.split(jpeg, Link.frameRoom(link.mtu))))
         handler.removeCallbacks(artGaveUp)
         handler.postDelayed(artGaveUp, 20_000)
     }

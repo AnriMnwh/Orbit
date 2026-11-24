@@ -26,6 +26,7 @@ class NotificationRelay : NotificationListenerService() {
     private val idByKey = ConcurrentHashMap<String, Int>()
     private val keyById = ConcurrentHashMap<Int, String>()
     private val lastText = ConcurrentHashMap<String, String>()
+    private val labels = ConcurrentHashMap<String, String>()
     private val nextId = AtomicInteger(1)
 
     @Volatile private var ringingKey: String? = null
@@ -61,9 +62,13 @@ class NotificationRelay : NotificationListenerService() {
         }
 
         if (!worthShowing(sbn)) return
+        // Secret notifications (one-time codes, password managers) are not for the wrist or the radio link.
+        if (notification.visibility == Notification.VISIBILITY_SECRET) return
         // Remember the app so the Alerts tab can offer a switch for it, then apply the user's choices.
-        val app = appName(sbn.packageName)
-        settings.noteApp(sbn.packageName, app)
+        // The name lookup and the saved list are only touched the first time an app is seen.
+        val app = labels.getOrPut(sbn.packageName) {
+            appName(sbn.packageName).also { settings.noteApp(sbn.packageName, it) }
+        }
         if (sbn.packageName in settings.blockedApps) return
         if (settings.quietWhileUsingPhone && phoneInUse()) return
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty().trim()

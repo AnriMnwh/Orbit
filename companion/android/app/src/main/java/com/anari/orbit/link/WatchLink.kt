@@ -50,10 +50,19 @@ class WatchLink(
     private var inFlight: ArrayDeque<Op>? = null
     private var retries = 0
 
+    /** Wait before the next reconnect attempt; doubles on each failure, resets once the link is up. */
+    private var backoffMs = RECONNECT_MIN_MS
+
+    /** True between asking for the fast connection rate and asking for the frugal one again. */
+    private var fast = false
+
     var up = false
         private set
     var mtu = 23
         private set
+
+    /** Whether bulk frames can be queued right now. */
+    val canSendBulk get() = up && bulkIn != null && bulkReady
 
     /** Whether this watch offers the bulk channel (older firmware does not). */
     val hasBulk get() = bulkIn != null
@@ -69,7 +78,7 @@ class WatchLink(
         try {
             events.onLine(JSONObject(text))
         } catch (e: Exception) {
-            Log.w(TAG, "unreadable line from watch: ${text.take(80)}")
+            Log.w(TAG, "unreadable line from watch (${text.length} chars)")
         }
     }
 
@@ -77,8 +86,12 @@ class WatchLink(
     fun connect(address: String, quick: Boolean) {
         close()
         this.address = address
+        backoffMs = RECONNECT_MIN_MS
         open(quick)
     }
+
+    /** True while the link is up to this very watch, so there is nothing to restart. */
+    fun isUpTo(address: String) = up && this.address == address
 
     fun close() {
         address = null
@@ -112,6 +125,7 @@ class WatchLink(
         bulk.clear()
         inFlight = null
         retries = 0
+        fast = false
         lines.reset()
         gatt?.let {
             try {
@@ -125,11 +139,15 @@ class WatchLink(
         if (wasUp) events.onDown()
     }
 
-    /** A fresh connection attempt is the one recovery that works on every phone. */
+    /**
+     * A fresh connection attempt is the one recovery that works on every phone.
+     * Repeated failures (a watch that is off, or being a keyboard) wait longer each time.
+     */
     private fun reopenSoon() {
         drop()
         handler.removeCallbacksAndMessages(TOKEN)
-        handler.postDelayed({ open(false) }, TOKEN, 1500)
+        handler.postDelayed({ open(false) }, TOKEN, backoffMs)
+        backoffMs = (backoffMs * 2).coerceAtMost(RECONNECT_MAX_MS)
     }
 
     // ---------------------------------------------------------------- sending
@@ -153,19 +171,30 @@ class WatchLink(
      */
     fun sendBulk(frames: List<ByteArray>, done: () -> Unit = {}): Boolean {
         val bulkIn = bulkIn
-        if (!up || bulkIn == null || !bulkReady) return false
+        if (bulkIn == null || !canSendBulk) return false
         // A short burst at the fastest connection rate, then back to the frugal one.
-        bulk += Then { gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
+        bulk += Then {
+            fast = true
+            gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+        }
         for (frame in frames) bulk += Write(bulkIn, frame, wait = false)
         bulk += Then {
-            gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+            relax()
             done()
         }
         pump()
         return true
     }
 
-    /** Forgets bulk frames not yet sent (the assistant was cancelled, say). */
+    private fun relax() {
+        fast = false
+        gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+    }
+
+    /**
+     * Forgets bulk frames not yet sent (the assistant was cancelled, say). Their
+     * completion callbacks do not run, but the frugal connection rate is restored.
+     */
     fun clearBulk() {
         if (inFlight === bulk) {
             val current = bulk.first()
@@ -174,6 +203,8 @@ class WatchLink(
         } else {
             bulk.clear()
         }
+        if (fast) bulk += Then { relax() }
+        pump()
     }
 
     private fun pump() {
@@ -254,6 +285,7 @@ class WatchLink(
             bulkIn = bulkService?.getCharacteristic(Link.BULK_IN)
             bulkService?.getCharacteristic(Link.BULK_OUT)?.let { control += Subscribe(it) }
             control += Then {
+                backoffMs = RECONNECT_MIN_MS
                 up = true
                 events.onUp()
             }
@@ -279,6 +311,8 @@ class WatchLink(
 
     private companion object {
         const val TAG = "OrbitLink"
+        const val RECONNECT_MIN_MS = 1_500L
+        const val RECONNECT_MAX_MS = 60_000L
         val TOKEN = Any()
     }
 }

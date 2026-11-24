@@ -64,7 +64,7 @@ class LinkService : Service(), WatchLink.Events {
         thread = HandlerThread("orbit-link").apply { start() }
         handler = Handler(thread.looper)
         link = WatchLink(this, handler, this)
-        media = MediaRelay(this, handler, link)
+        media = MediaRelay(this, handler, link, scope)
         agent = AgentRelay(settings, scope, handler, link)
         daily = DailyRelay(this, settings, scope, handler, link)
         photos = PhotoRelay(PhotoStore.get(this), handler, link)
@@ -98,7 +98,8 @@ class LinkService : Service(), WatchLink.Events {
         }
         val quick = intent?.getBooleanExtra(EXTRA_QUICK, false) == true
         Hub.state.update { it.copy(address = address) }
-        handler.post { link.connect(address, quick) }
+        // Opening the app restarts the service; a link that is already up to this watch is left alone.
+        handler.post { if (!link.isUpTo(address)) link.connect(address, quick) }
         return START_STICKY
     }
 
@@ -195,6 +196,7 @@ class LinkService : Service(), WatchLink.Events {
                     null
                 }
                 agent.enabled = "agent" in both && link.hasBulk
+                agent.linkUp()
                 Hub.state.update { it.copy(orbitLink = true, caps = both, firmware = json.optString("fw", it.firmware)) }
                 media.refresh()
                 daily.caps = both

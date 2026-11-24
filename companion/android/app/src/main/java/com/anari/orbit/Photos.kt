@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * The photos chosen for the watch, already cut to its round 466 x 466 screen.
@@ -38,6 +39,14 @@ class PhotoStore private constructor(context: Context) {
     private val folder = File(context.filesDir, "photos").apply { mkdirs() }
     private val index = File(folder, "index.json")
     private val leftOnWatch = File(folder, "left-on-watch.txt")
+
+    // The index and the delete list are small files, but they are written from the main thread (removing
+    // a photo) and the link thread (marking one sent). One background thread does the disk work in order.
+    private val disk = Executors.newSingleThreadExecutor { Thread(it, "orbit-photos").apply { isDaemon = true } }
+    private val deletes = ArrayList<String>().apply {
+        if (leftOnWatch.exists()) addAll(leftOnWatch.readLines().filter { it.isNotBlank() })
+    }
+
     val items = MutableStateFlow(load())
 
     private fun load(): List<Item> = try {
@@ -46,13 +55,25 @@ class PhotoStore private constructor(context: Context) {
             .map { Item(it.getString("key"), File(folder, it.getString("key") + ".jpg"), it.optString("name"), it.optString("refused")) }
             .filter { it.file.exists() }
     } catch (e: Exception) {
-        emptyList()
+        // A missing or damaged index must not make the pictures vanish: list the files themselves, all unsent.
+        folder.listFiles { f -> f.extension == "jpg" }.orEmpty().sortedBy { it.lastModified() }
+            .map { Item(it.nameWithoutExtension, it, "") }
     }
 
+    /** Shows the new list at once and writes it out in the background, through a temporary file so a crash cannot leave half an index. */
     private fun save(list: List<Item>) {
-        val saved = list.map { JSONObject().put("key", it.key).put("name", it.watchName).put("refused", it.refused) }
-        index.writeText(JSONArray(saved).toString())
         items.value = list
+        val saved = list.map { JSONObject().put("key", it.key).put("name", it.watchName).put("refused", it.refused) }
+        val text = JSONArray(saved).toString()
+        disk.execute {
+            try {
+                val temp = File(folder, "index.json.tmp")
+                temp.writeText(text)
+                temp.renameTo(index)
+            } catch (e: Exception) {
+                Log.w("OrbitPhotos", "could not save the photo list: $e")
+            }
+        }
     }
 
     /** Cuts the picture to the watch's shape, saves it and queues it. Slow: call off the main thread. */
@@ -91,20 +112,36 @@ class PhotoStore private constructor(context: Context) {
     @Synchronized
     fun remove(key: String): Item? {
         val item = items.value.firstOrNull { it.key == key } ?: return null
-        item.file.delete()
         save(items.value - item)
+        // The same picture may be added again before the file is gone; only delete it if it is still unlisted.
+        disk.execute { if (items.value.none { it.key == key }) item.file.delete() }
         // If the watch has it, it must be told; that may have to wait until it is next connected.
-        if (item.sent) leftOnWatch.appendText(item.watchName + "\n")
+        if (item.sent) {
+            deletes += item.watchName
+            saveDeletes()
+        }
         return item
     }
 
     /** Names of photos deleted on the phone that the watch has not yet been told to delete. */
     @Synchronized
     fun takeLeftOnWatch(): List<String> {
-        if (!leftOnWatch.exists()) return emptyList()
-        val names = leftOnWatch.readLines().filter { it.isNotBlank() }
-        leftOnWatch.delete()
+        if (deletes.isEmpty()) return emptyList()
+        val names = deletes.toList()
+        deletes.clear()
+        saveDeletes()
         return names
+    }
+
+    private fun saveDeletes() {
+        val text = deletes.joinToString("") { it + "\n" }
+        disk.execute {
+            try {
+                if (text.isEmpty()) leftOnWatch.delete() else leftOnWatch.writeText(text)
+            } catch (e: Exception) {
+                Log.w("OrbitPhotos", "could not save the delete list: $e")
+            }
+        }
     }
 
     companion object {
@@ -150,9 +187,9 @@ class PhotoRelay(private val store: PhotoStore, private val handler: Handler, pr
             store.remove(next.key)
             return pump()
         }
-        sending = next.key
         link.send(Messages.photo(next.key, bytes))
-        link.sendBulk(Link.frames(Link.KIND_PHOTO, Link.split(bytes, Link.frameRoom(link.mtu))))
+        if (!link.sendBulk(Link.frames(Link.KIND_PHOTO, bytes, Link.frameRoom(link.mtu)))) return
+        sending = next.key
         handler.removeCallbacks(gaveUp)
         handler.postDelayed(gaveUp, 90_000)
     }

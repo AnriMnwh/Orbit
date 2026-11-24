@@ -176,11 +176,21 @@ class DailyRelay(
         if (!link.up) return
         val allowed = settings.calendarOn && has(Manifest.permission.READ_CALENDAR)
         val now = System.currentTimeMillis()
-        val events = if (allowed) {
-            Agenda.upcoming(calendar(now - DAY, now + (agendaDays + 1) * DAY), now, ZoneId.systemDefault(), agendaMax, agendaDays)
-        } else {
-            emptyList()
+        val max = agendaMax
+        val days = agendaDays
+        // The calendar query can be slow; it runs off the link thread and the result comes back to it.
+        scope.launch {
+            val events = if (allowed) {
+                Agenda.upcoming(calendar(now - DAY, now + (days + 1) * DAY), now, ZoneId.systemDefault(), max, days)
+            } else {
+                emptyList()
+            }
+            handler.post { showAgenda(events) }
         }
+    }
+
+    private fun showAgenda(events: List<AgendaEvent>) {
+        if (!link.up) return
         if ("agenda" in caps) {
             // A long list is a lot of radio; say it again only when it has changed.
             val lines = Messages.agenda(events)
@@ -199,7 +209,10 @@ class DailyRelay(
         if ("day" !in caps || !link.up || !settings.calendarOn || !has(Manifest.permission.READ_CALENDAR)) return
         val zone = ZoneId.systemDefault()
         val from = date.atStartOfDay(zone).toInstant().toEpochMilli()
-        Messages.day(date, Agenda.onDate(calendar(from - DAY, from + 2 * DAY), date, zone)).forEach(link::send)
+        scope.launch {
+            val lines = Messages.day(date, Agenda.onDate(calendar(from - DAY, from + 2 * DAY), date, zone))
+            handler.post { if (link.up) lines.forEach(link::send) }
+        }
     }
 
     /**
@@ -212,7 +225,10 @@ class DailyRelay(
         val zone = ZoneId.systemDefault()
         val from = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
         val to = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        link.send(Messages.busy(month, Agenda.busyDays(calendar(from - DAY, to + DAY), month, zone)))
+        scope.launch {
+            val message = Messages.busy(month, Agenda.busyDays(calendar(from - DAY, to + DAY), month, zone))
+            handler.post { if (link.up) link.send(message) }
+        }
     }
 
     /**
@@ -285,7 +301,6 @@ class DailyRelay(
 
     private companion object {
         const val TAG = "OrbitDaily"
-        const val MAX_EVENTS = 8
         const val DAY = 24 * 60 * 60 * 1000L
     }
 }
