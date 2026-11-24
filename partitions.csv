@@ -3,9 +3,18 @@
 # fall back to the previous version if the new one fails to start.
 # Everything stays inside the first 16 MB of the 32 MB flash chip, which is the
 # range Waveshare's own examples use. The upper 16 MB is left free for later.
-nvs,      data, nvs,     0x9000,   0x6000,
+#
+# Settings, pairings and saved networks live in "nvs". It used to be the 24 KB
+# at 0x9000; it is now the 56 KB that was unused between phy_init and the
+# first app slot, and the old area is "nvs_v1". The firmware copies anything
+# in nvs_v1 into nvs once at boot, then erases nvs_v1 (board.c, nvs_start).
+# Only flashing over USB writes this table; a watch updated over the air keeps
+# its old table, where "nvs" is still the 24 KB area, and works as before.
+# Nothing else moved, so either table runs any firmware from either side.
+nvs_v1,   data, nvs,     0x9000,   0x6000,
 otadata,  data, ota,     0xf000,   0x2000,
 phy_init, data, phy,     0x11000,  0x1000,
+nvs,      data, nvs,     0x12000,  0xE000,
 ota_0,    app,  ota_0,   0x20000,  0x400000,
 ota_1,    app,  ota_1,   0x420000, 0x400000,
 data,     data, fat,     0x820000, 0x7E0000,

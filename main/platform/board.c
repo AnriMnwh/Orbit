@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -28,6 +29,9 @@
 #include "qmi8658.h"
 
 #include "platform.h"
+
+/* The settings area before it moved (partitions.csv). */
+#define NVS_OLD "nvs_v1"
 
 static const char *TAG = "board";
 
@@ -154,13 +158,14 @@ void svc_set_time(time_t utc)
 }
 
 /* Back to how it left the factory: settings, pairings, saved networks and
- * keys all live in the NVS partition; photos and maps are files. */
+ * keys all live in NVS; photos and maps are files. */
 void svc_factory_reset(void)
 {
     svc_clear(CLEAR_PHOTOS);
     svc_clear(CLEAR_MAPS);
     nvs_flash_deinit();
     nvs_flash_erase();
+    nvs_flash_erase_partition(NVS_OLD); /* in case a copy across never finished */
     esp_restart();
 }
 
@@ -532,13 +537,107 @@ static bool display_start(void)
     return esp_lv_adapter_start() == ESP_OK;
 }
 
-void app_main(void)
+/* ---------------------------------------------------------------- storage */
+
+/* Copies one entry from the old settings area into the current one, unless
+ * the current one already has it (an earlier, interrupted copy, or a newer
+ * value). Each entry keeps its namespace, key and type. */
+static bool nvs_copy_entry(const nvs_entry_info_t *e)
+{
+    nvs_handle_t src, dst;
+    if (nvs_open_from_partition(NVS_OLD, e->namespace_name, NVS_READONLY, &src) != ESP_OK) return false;
+    if (nvs_open(e->namespace_name, NVS_READWRITE, &dst) != ESP_OK) {
+        nvs_close(src);
+        return false;
+    }
+    nvs_type_t have;
+    esp_err_t err = ESP_OK;
+    if (nvs_find_key(dst, e->key, &have) == ESP_OK) goto done;
+    switch (e->type) {
+    case NVS_TYPE_U8: { uint8_t v; if ((err = nvs_get_u8(src, e->key, &v)) == ESP_OK) err = nvs_set_u8(dst, e->key, v); break; }
+    case NVS_TYPE_I8: { int8_t v; if ((err = nvs_get_i8(src, e->key, &v)) == ESP_OK) err = nvs_set_i8(dst, e->key, v); break; }
+    case NVS_TYPE_U16: { uint16_t v; if ((err = nvs_get_u16(src, e->key, &v)) == ESP_OK) err = nvs_set_u16(dst, e->key, v); break; }
+    case NVS_TYPE_I16: { int16_t v; if ((err = nvs_get_i16(src, e->key, &v)) == ESP_OK) err = nvs_set_i16(dst, e->key, v); break; }
+    case NVS_TYPE_U32: { uint32_t v; if ((err = nvs_get_u32(src, e->key, &v)) == ESP_OK) err = nvs_set_u32(dst, e->key, v); break; }
+    case NVS_TYPE_I32: { int32_t v; if ((err = nvs_get_i32(src, e->key, &v)) == ESP_OK) err = nvs_set_i32(dst, e->key, v); break; }
+    case NVS_TYPE_U64: { uint64_t v; if ((err = nvs_get_u64(src, e->key, &v)) == ESP_OK) err = nvs_set_u64(dst, e->key, v); break; }
+    case NVS_TYPE_I64: { int64_t v; if ((err = nvs_get_i64(src, e->key, &v)) == ESP_OK) err = nvs_set_i64(dst, e->key, v); break; }
+    case NVS_TYPE_STR:
+    case NVS_TYPE_BLOB: {
+        size_t n = 0;
+        bool str = e->type == NVS_TYPE_STR;
+        err = str ? nvs_get_str(src, e->key, NULL, &n) : nvs_get_blob(src, e->key, NULL, &n);
+        if (err != ESP_OK) break;
+        void *buf = malloc(n ? n : 1);
+        if (!buf) {
+            err = ESP_ERR_NO_MEM;
+            break;
+        }
+        err = str ? nvs_get_str(src, e->key, buf, &n) : nvs_get_blob(src, e->key, buf, &n);
+        if (err == ESP_OK) err = str ? nvs_set_str(dst, e->key, buf) : nvs_set_blob(dst, e->key, buf, n);
+        memset(buf, 0, n); /* may be a password or key */
+        free(buf);
+        break;
+    }
+    default: break; /* no other types are written by this firmware or IDF */
+    }
+    if (err == ESP_OK) err = nvs_commit(dst);
+done:
+    nvs_close(dst);
+    nvs_close(src);
+    if (err != ESP_OK) ESP_LOGE(TAG, "settings %s/%s not copied: %s", e->namespace_name, e->key, esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
+/* Opens NVS, and once, after a USB flash with the current partition table,
+ * moves the settings from the old 24 KB area into the larger one (see
+ * partitions.csv). On a watch still on the old table there is no NVS_OLD
+ * partition and nothing happens. If any entry fails to copy, the old area is
+ * kept and the copy runs again next boot; entries already copied are skipped. */
+static void nvs_start(void)
 {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
+    const esp_partition_t *old = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, NVS_OLD);
+    if (!old) return;
+    /* Already moved: every page is still erased. Checked before opening it,
+     * because opening a blank area as NVS writes to it. */
+    bool blank = true;
+    for (uint32_t page = 0; blank && page < old->size; page += 4096) {
+        uint32_t head[8];
+        if (esp_partition_read(old, page, head, sizeof(head)) != ESP_OK) break;
+        for (int i = 0; i < 8; i++) blank = blank && head[i] == 0xFFFFFFFFu;
+    }
+    if (blank) return;
+    if (nvs_flash_init_partition(NVS_OLD) != ESP_OK) {
+        ESP_LOGE(TAG, "old settings storage is unreadable; clearing it");
+        nvs_flash_erase_partition(NVS_OLD);
+        return;
+    }
+    int copied = 0, failed = 0;
+    nvs_iterator_t it = NULL;
+    for (err = nvs_entry_find(NVS_OLD, NULL, NVS_TYPE_ANY, &it); err == ESP_OK; err = nvs_entry_next(&it)) {
+        nvs_entry_info_t info;
+        if (nvs_entry_info(it, &info) != ESP_OK) continue;
+        if (nvs_copy_entry(&info)) copied++;
+        else failed++;
+    }
+    nvs_release_iterator(it);
+    nvs_flash_deinit_partition(NVS_OLD);
+    if (failed) {
+        ESP_LOGE(TAG, "%d settings could not be moved; keeping the old storage until next start", failed);
+        return;
+    }
+    nvs_flash_erase_partition(NVS_OLD);
+    if (copied) ESP_LOGI(TAG, "moved %d settings to the larger storage", copied);
+}
+
+void app_main(void)
+{
+    nvs_start();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 

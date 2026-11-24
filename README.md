@@ -72,6 +72,7 @@ Download the latest release assets from the [**Releases**](https://github.com/An
 2. **Subsequent Wi-Fi OTA updates** (no USB cable needed):
    - On the watch: **Settings > System > Allow update**
    - In your browser on the same Wi-Fi network: open `http://orbit.local` → **Update** → upload `orbit-v0.1.0-ota.bin`
+   - An OTA update keeps the watch's partition table. Watches first flashed before settings storage grew to 56 KB keep the original 24 KB until they are flashed once over USB; that flash moves every setting, pairing and saved network across by itself, and photos stay where they are.
 
 3. **Android companion app** (optional):
    - Install `orbit-companion-v0.1.0.apk` on Android 13+ (API 33+), grant Bluetooth and notification access, and tap **Pair watch**.
