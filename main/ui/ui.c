@@ -1,3 +1,4 @@
+#include <string.h>
 #include "ui.h"
 
 /* Soft tonal colours in the spirit of Material You. */
@@ -162,6 +163,11 @@ void ui_arc_set(lv_obj_t *arc, int percent)
     lv_obj_set_style_arc_opa(arc, percent == 0 ? LV_OPA_TRANSP : LV_OPA_COVER, LV_PART_INDICATOR);
 }
 
+void ui_label_set(lv_obj_t *label, const char *text)
+{
+    if (strcmp(lv_label_get_text(label), text) != 0) lv_label_set_text(label, text);
+}
+
 /* -------------------------------------------------------------- time text */
 
 static void time_text_tick(lv_timer_t *t)
@@ -170,7 +176,7 @@ static void time_text_tick(lv_timer_t *t)
     char buf[16];
     svc_localtime(&now);
     fmt_clock(buf, sizeof(buf), &now, false);
-    lv_label_set_text(lv_timer_get_user_data(t), buf);
+    ui_label_set(lv_timer_get_user_data(t), buf);
 }
 
 /* At this size the bezel's curve over five characters is under a pixel, so a
@@ -217,7 +223,9 @@ static void list_layout(lv_obj_t *list, bool show_bar)
         int d = LV_ABS((ra.y1 + ra.y2) / 2 - mid);
         if (d > SCR_C) d = SCR_C;
         int k = d * d * 100 / (SCR_C * SCR_C); /* 0 in the middle, 100 at the rim */
-        lv_obj_set_style_text_opa(row, (lv_opa_t)(255 - k * 170 / 100), 0);
+        lv_opa_t opa = (lv_opa_t)(255 - k * 170 / 100);
+        /* Writing a style invalidates the row, so skip frames where it did not move. */
+        if (lv_obj_get_style_text_opa(row, 0) != opa) lv_obj_set_style_text_opa(row, opa, 0);
     }
     if (!bar) return;
     int above = lv_obj_get_scroll_top(list), below = lv_obj_get_scroll_bottom(list);
@@ -286,4 +294,42 @@ lv_timer_t *ui_timer(lv_obj_t *owner, lv_timer_cb_t cb, uint32_t period_ms, void
     lv_timer_t *t = lv_timer_create(cb, period_ms, user);
     lv_obj_add_event_cb(owner, timer_owner_deleted, LV_EVENT_DELETE, t);
     return t;
+}
+
+#define VISUAL_MAX 16
+static lv_timer_t *visual[VISUAL_MAX];
+static bool visual_parked;
+
+static void visual_gone(lv_event_t *e)
+{
+    lv_timer_t *t = lv_event_get_user_data(e);
+    for (int i = 0; i < VISUAL_MAX; i++)
+        if (visual[i] == t) visual[i] = NULL;
+}
+
+lv_timer_t *ui_timer_visual(lv_obj_t *owner, lv_timer_cb_t cb, uint32_t period_ms, void *user)
+{
+    lv_timer_t *t = ui_timer(owner, cb, period_ms, user);
+    for (int i = 0; i < VISUAL_MAX; i++) {
+        if (visual[i]) continue;
+        visual[i] = t;
+        lv_obj_add_event_cb(owner, visual_gone, LV_EVENT_DELETE, t);
+        if (visual_parked) lv_timer_pause(t);
+        break;
+    }
+    return t;
+}
+
+void ui_timers_rest(bool resting)
+{
+    visual_parked = resting;
+    for (int i = 0; i < VISUAL_MAX; i++) {
+        if (!visual[i]) continue;
+        if (resting) {
+            lv_timer_pause(visual[i]);
+        } else {
+            lv_timer_resume(visual[i]);
+            lv_timer_ready(visual[i]);
+        }
+    }
 }

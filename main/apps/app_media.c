@@ -43,7 +43,7 @@ static void music_tick(void)
         ui_arc_set(m_arc, 0);
         buf[0] = 0;
     }
-    lv_label_set_text(m_time, buf);
+    ui_label_set(m_time, buf);
 }
 
 static void music_paint(void)

@@ -131,11 +131,6 @@ void svc_notif_reply(uint32_t id, const char *text)
     printf("[sim] reply to %u: %s\n", (unsigned)id, text);
 }
 
-void svc_tilt(float *x, float *y, float *z)
-{
-    *x = 0.12f, *y = -0.05f, *z = 0.99f;
-}
-
 void svc_link_forget(void)
 {
     S.link.status = LINK_WAITING;
@@ -166,6 +161,8 @@ const lv_image_dsc_t *svc_album_art(void)
 {
     static uint16_t *px;
     static lv_image_dsc_t dsc;
+    static bool ready; /* the file never changes, so decode and darken it once */
+    if (ready) return &dsc;
     char path[512];
     snprintf(path, sizeof(path), "%s/photo_2.rgb565", sim_data_dir);
     FILE *f = fopen(path, "rb");
@@ -183,6 +180,7 @@ const lv_image_dsc_t *svc_album_art(void)
         .data_size = SCR * SCR * 2,
         .data = (const uint8_t *)px,
     };
+    ready = true;
     return &dsc;
 }
 

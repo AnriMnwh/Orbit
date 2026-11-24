@@ -282,26 +282,9 @@ def minus(i):
     i.line([(5, 12), (19, 12)], 2.4)
 
 
-def mic(i):
-    i.rrect(9, 2.5, 15, 14, 3)
-    i.arc(12, 11, 6.5, 0, 180)
-    i.line([(12, 17.5), (12, 21)])
-    i.line([(8.5, 21), (15.5, 21)])
-
-
 def phone(i):
     i.rrect(6.5, 2.5, 17.5, 21.5, 2.6)
     i.line([(11, 18), (13, 18)])
-
-
-def shutter(i):
-    i.ring(12, 12, 9.2)
-    i.dot(12, 12, 5.6)
-
-
-def video(i):
-    i.rrect(2.5, 6.5, 15.5, 17.5, 2.4)
-    i.line([(15.5, 10.5), (21, 7.5), (21, 16.5), (15.5, 13.5)], 2, closed=True)
 
 
 def apple(i):
@@ -352,12 +335,6 @@ def trash(i):
     i.line([(4, 6.5), (20, 6.5)])
     i.line([(9.5, 6.5), (9.5, 3.5), (14.5, 3.5), (14.5, 6.5)])
     i.line([(6, 6.5), (7, 20.5), (17, 20.5), (18, 6.5)])
-
-
-def chat(i):
-    i.rrect(3, 3.5, 21, 16.5, 4)
-    i.cut_poly([(7.6, 15), (11.4, 15), (11.4, 18), (7.6, 18)])
-    i.line([(7, 16.5), (7, 21), (11.8, 16.5)])
 
 
 def face(i):
@@ -426,52 +403,12 @@ def cloud(i):
     i.line(pts, 2, closed=True)
 
 
-def wind(i):
-    i.line([(3, 9.5), (13.5, 9.5)] + i.arc_pts(13.5, 6.8, 2.7, 90, -150, 16))
-    i.line([(3, 14.5), (17.5, 14.5)] + i.arc_pts(17.5, 17.2, 2.7, -90, 150, 16))
-    i.line([(3, 19.2), (9.5, 19.2)], 2)
-
-
 def calc(i):
     i.rrect(4.5, 2.5, 19.5, 21.5, 3)
     i.line([(8.2, 7), (15.8, 7)], 2.2)
     for y in (12.2, 16.8):
         for x in (8.4, 12, 15.6):
             i.dot(x, y, 1.25)
-
-
-def piano(i):
-    i.rrect(3, 5, 21, 19, 2.5)
-    i.line([(9, 13), (9, 19)], 1.6)
-    i.line([(15, 13), (15, 19)], 1.6)
-    i.rrect_fill(7.4, 5, 10.6, 12.5, 0.8)
-    i.rrect_fill(13.4, 5, 16.6, 12.5, 0.8)
-
-
-def metronome(i):
-    i.line([(8.5, 3.5), (15.5, 3.5), (19, 20.5), (5, 20.5)], 2, closed=True)
-    i.line([(12, 17), (16.5, 6.5)], 1.8)
-    i.dot(15.2, 9.6, 1.9)
-
-
-def tuner(i):
-    i.arc(12, 16.5, 9, 200, 340)
-    i.line([(12, 16.5), (16, 9)], 2.2)
-    i.dot(12, 16.5, 2)
-    i.line([(12, 4.5), (12, 6.5)], 1.8)
-
-
-def level(i):
-    i.ring(12, 12, 9)
-    i.ring(12, 12, 3.2, 1.8)
-    i.line([(2, 12), (5.5, 12)], 1.8)
-    i.line([(18.5, 12), (22, 12)], 1.8)
-
-
-def dice(i):
-    i.rrect(3.5, 3.5, 20.5, 20.5, 4)
-    for x, y in ((8, 8), (16, 8), (12, 12), (8, 16), (16, 16)):
-        i.dot(x, y, 1.5)
 
 
 def sunrise(i):
@@ -496,12 +433,6 @@ def monitor(i):
     i.rrect(2.5, 4, 21.5, 16.5, 2.5)
     i.line([(12, 16.5), (12, 20.5)])
     i.line([(8, 20.5), (16, 20.5)])
-
-
-def tally(i):
-    for x in (5.5, 9.5, 13.5, 17.5):
-        i.line([(x, 5), (x, 19)], 2)
-    i.line([(3, 16.5), (20.5, 7.5)], 2)
 
 
 def shuffle(i):
@@ -539,48 +470,6 @@ def half(i):
     i.poly(i.arc_pts(12, 12, 9, -90, 90, 24))
 
 
-def wave(i):
-    for y in (7.5, 12.5, 17.5):
-        i.line(i.arc_pts(6.5, y + 2.6, 4.4, 217, 323, 12) + i.arc_pts(13.5, y - 2.6, 4.4, 143, 37, 12)
-               + i.arc_pts(20.5, y + 2.6, 4.4, 217, 270, 8), 2)
-
-
-def gem(i):
-    i.ring(12, 12, 9.5)
-    i.line([(12, 5.5), (17, 12), (12, 18.5), (7, 12)], 2, closed=True)
-    i.dot(12, 12, 1.6)
-
-
-def tv(i):
-    i.rrect(2.5, 6.5, 21.5, 20.5, 3)
-    i.line([(8, 2.5), (12, 6.5), (16, 2.5)], 2)
-    i.rrect_fill(5.6, 9.6, 14.6, 17.4, 1.2)
-    i.dot(18.2, 11, 1.2)
-    i.dot(18.2, 15.6, 1.2)
-
-
-def cup(i):
-    i.line([(5, 9), (17, 9), (16, 18.5), (14.5, 20.5), (7.5, 20.5), (6, 18.5)], 2, closed=True)
-    i.arc(17.2, 13.2, 3, -75, 95)
-    i.line([(9, 3), (9, 5.5)], 1.8)
-    i.line([(13, 3), (13, 5.5)], 1.8)
-
-
-def ticket(i):
-    i.line([(3, 7), (21, 7), (21, 10)] + i.arc_pts(21, 12, 2, 270, 90, 8) + [(21, 14), (21, 17), (3, 17), (3, 14)]
-           + i.arc_pts(3, 12, 2, 90, -90, 8) + [(3, 10)], 2, closed=True)
-    for y in (9.6, 12, 14.4):
-        i.dot(9.5, y, 0.85)
-    i.line([(13.5, 10), (16.5, 14)], 1.8)
-
-
-def tape(i):
-    i.rrect(2.5, 5.5, 21.5, 18.5, 2.5)
-    i.ring(8, 12, 2.4, 1.8)
-    i.ring(16, 12, 2.4, 1.8)
-    i.line([(8, 14.4), (16, 14.4)], 1.6)
-
-
 def globe(i):
     i.ring(12, 12, 9)
     i.line([(3, 12), (21, 12)], 1.8)
@@ -611,17 +500,17 @@ ICONS = [
     ("timer", timer), ("play", play), ("pause", pause), ("next", nxt), ("prev", prev),
     ("vol_up", vol_up), ("vol_down", vol_down), ("bluetooth", bluetooth), ("wifi", wifi),
     ("sun", sun), ("moon", moon), ("torch", torch), ("bolt", bolt), ("back", back),
-    ("check", check), ("close", close), ("plus", plus), ("minus", minus), ("mic", mic),
-    ("phone", phone), ("shutter", shutter), ("video", video), ("apple", apple), ("ball", ball),
+    ("check", check), ("close", close), ("plus", plus), ("minus", minus),
+    ("phone", phone), ("apple", apple), ("ball", ball),
     ("drop", drop), ("heart", heart), ("steps", steps), ("power", power), ("target", target),
-    ("link", link), ("trash", trash), ("chat", chat), ("face", face), ("compass", compass),
+    ("link", link), ("trash", trash), ("face", face), ("compass", compass),
     ("info", info), ("aperture", aperture), ("stop", stop), ("restart", restart), ("zzz", zzz),
     ("rec", rec), ("half", half), ("grid", grid), ("alarm", alarm), ("hourglass", hourglass),
-    ("cloud", cloud), ("wind", wind), ("calc", calc), ("piano", piano), ("metronome", metronome),
-    ("tuner", tuner), ("level", level), ("dice", dice), ("sunrise", sunrise), ("dumbbell", dumbbell),
-    ("monitor", monitor), ("tally", tally), ("shuffle", shuffle), ("repeat", repeat),
-    ("calendar", calendar), ("wave", wave), ("gem", gem), ("tv", tv), ("cup", cup), ("ticket", ticket),
-    ("tape", tape), ("globe", globe), ("month", month), ("orbit", orbit),
+    ("cloud", cloud), ("calc", calc),
+    ("sunrise", sunrise), ("dumbbell", dumbbell),
+    ("monitor", monitor), ("shuffle", shuffle), ("repeat", repeat),
+    ("calendar", calendar),
+    ("globe", globe), ("month", month), ("orbit", orbit),
 ]
 
 # Two sizes cover the whole UI: 48 for launcher and hero buttons, 28 inline.

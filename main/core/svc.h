@@ -54,9 +54,6 @@ void svc_call(bool accept);
 
 void svc_notif_reply(uint32_t id, const char *text); /* Android only */
 
-/* --- motion --- */
-void svc_tilt(float *x, float *y, float *z); /* gravity in g; z points out of the screen */
-
 void svc_set_time(time_t utc);           /* set the clock by hand */
 /* Wipe settings, pairings, saved networks and keys, photos and maps, then restart. */
 void svc_factory_reset(void);

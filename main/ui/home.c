@@ -167,7 +167,14 @@ enum {
 };
 
 static lv_obj_t *q_batt, *q_link, *q_slider, *q_vol, *q_btn[Q_COUNT];
-static bool q_ringing;
+static bool q_ringing, q_dirty;
+static lv_obj_t *q_tile;
+
+/* Whether a tile is the one on screen: off-screen tiles skip refreshing. */
+static bool tile_live(lv_obj_t *tile)
+{
+    return tile && S.display == DISPLAY_ACTIVE && lv_tileview_get_tile_active(lv_obj_get_parent(tile)) == tile;
+}
 
 static bool quick_state(int id)
 {
@@ -186,6 +193,7 @@ static bool quick_state(int id)
 static void quick_refresh(void)
 {
     char buf[48];
+    q_dirty = false;
     if (S.batt.percent < 0) snprintf(buf, sizeof(buf), "Battery --");
     else snprintf(buf, sizeof(buf), "%d%%%s", S.batt.percent, S.batt.charging ? "  charging" : "");
     lv_label_set_text(q_batt, buf);
@@ -322,7 +330,9 @@ static void quick_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_BATTERY || e == EVT_LINK || e == EVT_SETTINGS || e == EVT_WIFI) quick_refresh();
+    if (e != EVT_BATTERY && e != EVT_LINK && e != EVT_SETTINGS && e != EVT_WIFI) return;
+    if (tile_live(q_tile)) quick_refresh();
+    else q_dirty = true;
 }
 
 void quick_create(lv_obj_t *tile)
@@ -362,13 +372,16 @@ void quick_create(lv_obj_t *tile)
     /* Room to scroll the last row comfortably into the middle. */
     lv_obj_set_pos(ui_box(col, 10, 10), 0, 668);
 
+    q_tile = tile;
     bus_watch(tile, quick_event, NULL);
     quick_refresh();
 }
 
 /* ----------------------------------------------------------- notifications */
 
-static lv_obj_t *n_list;
+static lv_obj_t *n_list, *n_tile;
+static bool n_dirty;
+static void notifs_request(void);
 
 static uint32_t card_id(lv_obj_t *card)
 {
@@ -429,6 +442,7 @@ static void ago(char *buf, size_t len, time_t when)
 
 static void notifs_refresh(void)
 {
+    n_dirty = false;
     lv_obj_clean(n_list);
     if (S.notif_count == 0) {
         lv_obj_t *empty = ui_box(n_list, 330, 300);
@@ -476,6 +490,14 @@ static void notifs_refresh(void)
 }
 
 static bool n_pending;
+static void notifs_refresh_async(void *arg);
+
+static void notifs_request(void)
+{
+    if (n_pending) return;
+    n_pending = true;
+    lv_async_call(notifs_refresh_async, NULL);
+}
 
 static void notifs_refresh_async(void *arg)
 {
@@ -488,21 +510,24 @@ static void notifs_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if ((e == EVT_NOTIF || e == EVT_MINUTE) && !n_pending) {
-        n_pending = true;
-        lv_async_call(notifs_refresh_async, NULL);
-    }
+    if (e != EVT_NOTIF && e != EVT_MINUTE) return;
+    /* Rebuilding the cards is the costliest thing a minute tick does, so an
+     * unseen list just notes that it is stale. */
+    if (tile_live(n_tile)) notifs_request();
+    else n_dirty = true;
 }
 
 static void notifs_deleted(lv_event_t *e)
 {
     LV_UNUSED(e);
     n_list = NULL;
+    n_tile = NULL;
     n_pending = false;
 }
 
 void notifs_create(lv_obj_t *tile)
 {
+    n_tile = tile;
     n_list = ui_list(tile);
     lv_obj_add_event_cb(n_list, notifs_deleted, LV_EVENT_DELETE, NULL);
     bus_watch(tile, notifs_event, NULL);
@@ -565,14 +590,22 @@ static void music_tile(lv_obj_t *tile)
 /* ---- activity ---- */
 
 
-static lv_obj_t *act_arc, *act_steps, *act_goal, *act_batt;
+static lv_obj_t *act_arc, *act_steps, *act_goal, *act_batt, *act_tile;
+static bool act_dirty;
+
+static void activity_gone(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    act_tile = NULL;
+}
 
 static void activity_refresh(void)
 {
     char buf[40];
+    act_dirty = false;
     snprintf(buf, sizeof(buf), "%u", (unsigned)S.steps);
     lv_label_set_text(act_steps, buf);
-    ui_arc_set(act_arc, (int)(S.steps * 100 / CFG.step_goal));
+    ui_arc_set(act_arc, CFG.step_goal ? (int)(S.steps * 100 / CFG.step_goal) : 0);
     lv_obj_set_style_arc_color(act_arc, ui_accent(), LV_PART_INDICATOR);
     if (S.steps >= CFG.step_goal) snprintf(buf, sizeof(buf), "Goal reached");
     else snprintf(buf, sizeof(buf), "%u to go", (unsigned)(CFG.step_goal - S.steps));
@@ -586,7 +619,9 @@ static void activity_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_MINUTE || e == EVT_BATTERY || e == EVT_SETTINGS) activity_refresh();
+    if (e != EVT_MINUTE && e != EVT_BATTERY && e != EVT_SETTINGS) return;
+    if (tile_live(act_tile)) activity_refresh();
+    else act_dirty = true;
 }
 
 static void activity_tile(lv_obj_t *tile)
@@ -611,6 +646,8 @@ static void activity_tile(lv_obj_t *tile)
     ui_icon(chip, &ic_bolt_28, C_DIM);
     lv_obj_move_to_index(act_batt, 1);
 
+    act_tile = tile;
+    lv_obj_add_event_cb(tile, activity_gone, LV_EVENT_DELETE, NULL);
     bus_watch(tile, activity_event, NULL);
     activity_refresh();
 }
@@ -838,4 +875,14 @@ void tile_create(lv_obj_t *tile, int kind)
     case TILE_AGENDA: agenda_tile_create(tile); break;
     default: break;
     }
+}
+
+/* Tiles that are off screen skip their refreshes and are marked stale
+ * instead; the shell calls this when one is about to come into view. */
+void home_sync(void)
+{
+    if (S.display != DISPLAY_ACTIVE) return;
+    if (q_tile && q_dirty) quick_refresh();
+    if (act_tile && act_dirty) activity_refresh();
+    if (n_tile && n_dirty) notifs_request();
 }

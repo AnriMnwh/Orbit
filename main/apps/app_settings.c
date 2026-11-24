@@ -9,9 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../ui/ui.h"
+#include "settings_priv.h"
 
-typedef void (*page_fn)(void);
 #define DEPTH 6
 
 static lv_obj_t *root, *list;
@@ -19,7 +18,6 @@ static page_fn stack[DEPTH];
 static int scroll_y[DEPTH], depth;
 static bool keep;      /* the top page holds typed text: do not rebuild it under the user */
 static bool show_pending;
-static int wizard = -1; /* current first-boot step, or -1 in plain Settings */
 
 static void show_now(void)
 {
@@ -55,7 +53,7 @@ static void show(void)
     }
 }
 
-static void refresh(void)
+void st_refresh(void)
 {
     if (keep) return;
     if (list) scroll_y[depth - 1] = lv_obj_get_scroll_y(list);
@@ -69,6 +67,20 @@ static void push(page_fn page)
     stack[depth++] = page;
     scroll_y[depth - 1] = 0;
     show();
+}
+
+/* Makes `page` the only page, for the setup steps. */
+void st_run_page(page_fn page)
+{
+    depth = 1;
+    stack[0] = page;
+    scroll_y[0] = 0;
+    show();
+}
+
+lv_obj_t *st_root(void)
+{
+    return root;
 }
 
 static void pop_to(int level)
@@ -166,19 +178,19 @@ static const char *on_off(bool v)
 }
 
 /* Flips the settings byte passed as the row's argument. */
-static void toggle(lv_event_t *e)
+void st_toggle(lv_event_t *e)
 {
     uint8_t *field = lv_event_get_user_data(e);
     *field = !*field;
     changed();
 }
 
-static void open_page(lv_event_t *e)
+void st_open_page(lv_event_t *e)
 {
     push((page_fn)lv_event_get_user_data(e));
 }
 
-static lv_obj_t *free_title(const char *text, int y)
+lv_obj_t *st_free_title(const char *text, int y)
 {
     lv_obj_t *l = ui_label(root, text, F16, C_DIM);
     lv_obj_set_style_text_letter_space(l, 2, 0);
@@ -186,7 +198,7 @@ static lv_obj_t *free_title(const char *text, int y)
     return l;
 }
 
-static lv_obj_t *free_text(const char *text, const lv_font_t *font, lv_color_t color, int y)
+lv_obj_t *st_free_text(const char *text, const lv_font_t *font, lv_color_t color, int y)
 {
     lv_obj_t *l = ui_label(root, text, font, color);
     lv_obj_set_width(l, 330);
@@ -198,6 +210,11 @@ static lv_obj_t *free_text(const char *text, const lv_font_t *font, lv_color_t c
 /* ------------------------------------------------------------------- Wi-Fi */
 
 static char pick_ssid[33];
+
+const char *st_pick_ssid(void)
+{
+    return pick_ssid;
+}
 static int wifi_home; /* stack level to return to once a network is chosen */
 
 static void qr(const char *payload, int y)
@@ -235,31 +252,31 @@ static void web_stop(lv_event_t *e)
 
 /* The phone route: a QR code that opens the setup page, where photos, keys,
  * the assistant and the camera are configured. */
-static void phone_page(void)
+void st_phone_page(void)
 {
     char buf[112];
-    free_title("SET UP FROM PHONE", 34);
+    st_free_title("SET UP FROM PHONE", 34);
     if (S.wifi.setup_mode) {
         if (!S.wifi.web_active) svc_web_enable(true);
         /* Phones offer to join the network in this code; the page then opens by itself. */
         snprintf(buf, sizeof(buf), "WIFI:T:WPA;S:Orbit-Setup;P:%s;;", S.wifi.setup_pass);
         qr(buf, 64);
-        free_text("Scan to join Orbit-Setup", F20, C_TEXT, 240);
+        st_free_text("Scan to join Orbit-Setup", F20, C_TEXT, 240);
         snprintf(buf, sizeof(buf), "Pass %s  " LV_SYMBOL_BULLET "  PIN %s", S.wifi.setup_pass, S.wifi.web_pin);
-        free_text(buf, F16, C_DIM, 270);
+        st_free_text(buf, F16, C_DIM, 270);
         lv_obj_align(ui_pill_btn(root, "Stop", C_SURF2, C_TEXT, hotspot_toggle, NULL), LV_ALIGN_BOTTOM_MID, 0, -48);
     } else if (S.wifi.connected) {
         if (!S.wifi.web_active) svc_web_enable(true);
         snprintf(buf, sizeof(buf), "http://%s/?pin=%s", S.wifi.ip, S.wifi.web_pin);
         qr(buf, 64);
-        free_text("Scan to open setup page", F20, C_TEXT, 240);
+        st_free_text("Scan to open setup page", F20, C_TEXT, 240);
         snprintf(buf, sizeof(buf), "orbit.local  " LV_SYMBOL_BULLET "  PIN %s", S.wifi.web_pin);
-        free_text(buf, F16, ui_accent(), 270);
+        st_free_text(buf, F16, ui_accent(), 270);
         lv_obj_align(ui_pill_btn(root, "Stop page", C_SURF2, C_TEXT, web_stop, NULL), LV_ALIGN_BOTTOM_MID, 0, -48);
     } else {
         lv_obj_align(ui_icon(root, &ic_phone_48, C_FAINT), LV_ALIGN_TOP_MID, 0, 92);
-        free_text("No Wi-Fi yet", F28, C_TEXT, 156);
-        free_text("Start a temporary hotspot or turn on Wi-Fi to set up from your phone.", F20, C_DIM, 200);
+        st_free_text("No Wi-Fi yet", F28, C_TEXT, 156);
+        st_free_text("Start a temporary hotspot or turn on Wi-Fi to set up from your phone.", F20, C_DIM, 200);
         lv_obj_align(ui_pill_btn(root, "Start hotspot", ui_accent(), lv_color_black(), hotspot_toggle, NULL),
                      LV_ALIGN_BOTTOM_MID, 0, -58);
     }
@@ -385,7 +402,7 @@ static void networks_page(void)
     row(&ic_restart_28, "Search again", NULL, false, rescan, NULL);
 }
 
-static void choose_network(lv_event_t *e)
+void st_choose_network(lv_event_t *e)
 {
     LV_UNUSED(e);
     wifi_home = depth;
@@ -419,8 +436,8 @@ static void wifi_page(void)
     row(&ic_wifi_28, S.wifi.connected ? "Connected" : "Status", wifi_summary(), S.wifi.connected, NULL, NULL);
     if (S.wifi.failed) note("Could not join. Check the password and that the network is 2.4 GHz.");
     if (S.wifi.connected) row(NULL, "Address", S.wifi.ip, false, NULL, NULL);
-    row(&ic_target_28, "Choose network", NULL, false, choose_network, NULL);
-    row(&ic_phone_28, "Set up from phone", NULL, false, open_page, (void *)phone_page);
+    row(&ic_target_28, "Choose network", NULL, false, st_choose_network, NULL);
+    row(&ic_phone_28, "Set up from phone", NULL, false, st_open_page, (void *)st_phone_page);
     if (svc_configured(HAS_WIFI)) row(&ic_trash_28, "Forget network", NULL, false, forget_network, NULL);
 }
 
@@ -461,17 +478,16 @@ static void bt_page(void)
 static void connectivity_page(void)
 {
     page_title("Connectivity");
-    row(&ic_wifi_28, "Wi-Fi", wifi_summary(), S.wifi.connected, open_page, (void *)wifi_page);
+    row(&ic_wifi_28, "Wi-Fi", wifi_summary(), S.wifi.connected, st_open_page, (void *)wifi_page);
     row(&ic_bluetooth_28, "Bluetooth", S.link.status == LINK_CONNECTED ? "Connected" : "Waiting",
-        S.link.status == LINK_CONNECTED, open_page, (void *)bt_page);
-    row(&ic_phone_28, "Set up from phone", NULL, false, open_page, (void *)phone_page);
+        S.link.status == LINK_CONNECTED, st_open_page, (void *)bt_page);
+    row(&ic_phone_28, "Set up from phone", NULL, false, st_open_page, (void *)st_phone_page);
 }
 
 /* ----------------------------------------------------------------- display */
 
 static const uint8_t TIMEOUTS[] = {8, 12, 20, 30, 60};
 static const char *const AOD_NAMES[AOD_COUNT] = {"Off", "Clock", "Photos"};
-static const char *const FACE_NAMES[FACE_COUNT] = {"Digital", "Analog", "Modular", "Photo", "Minimal", "Custom"};
 static const char *const ACCENT_NAMES[ACCENT_COUNT] = {"Sky", "Mint", "Rose", "Violet", "Peach", "Sun"};
 static const char *const COMP_NAMES[COMP_COUNT] = {"Battery", "Steps", "Weather", "Day", "Pet", "Agenda", "None"};
 static const char *const TILE_NAMES[TILE_KINDS] = {"", "Music", "Activity", "Weather", "Timer", "Alarm", "Pet", "Agenda"};
@@ -584,13 +600,13 @@ static void display_page(void)
     }
     snprintf(buf, sizeof(buf), "%d s", CFG.timeout_s);
     row(&ic_timer_28, "Screen timeout", buf, true, cycle_timeout, NULL);
-    row(&ic_steps_28, "Raise to wake", on_off(CFG.raise_to_wake), CFG.raise_to_wake, toggle, &CFG.raise_to_wake);
+    row(&ic_steps_28, "Raise to wake", on_off(CFG.raise_to_wake), CFG.raise_to_wake, st_toggle, &CFG.raise_to_wake);
     row(&ic_face_28, "Watch face", FACE_NAMES[CFG.face], true, open_faces, NULL);
     row(NULL, "Left ring", COMP_NAMES[CFG.comp_left], true, cycle_left, NULL);
     row(NULL, "Right ring", COMP_NAMES[CFG.comp_right], true, cycle_right, NULL);
     row(&ic_spark_28, "Accent colour", ACCENT_NAMES[CFG.accent % ACCENT_COUNT], true, cycle_accent, NULL);
-    row(&ic_grid_28, "Grid launcher", on_off(CFG.grid_launcher), CFG.grid_launcher, toggle, &CFG.grid_launcher);
-    row(&ic_grid_28, "Tiles", NULL, false, open_page, (void *)tiles_page);
+    row(&ic_grid_28, "Grid launcher", on_off(CFG.grid_launcher), CFG.grid_launcher, st_toggle, &CFG.grid_launcher);
+    row(&ic_grid_28, "Tiles", NULL, false, st_open_page, (void *)tiles_page);
 }
 
 /* --------------------------------------------------------- sound and alerts */
@@ -615,11 +631,11 @@ static void sound_page(void)
 {
     char buf[16];
     page_title("Sound & alerts");
-    row(&ic_vol_up_28, "Sounds", on_off(CFG.sound), CFG.sound, toggle, &CFG.sound);
+    row(&ic_vol_up_28, "Sounds", on_off(CFG.sound), CFG.sound, st_toggle, &CFG.sound);
     slider_row(&ic_vol_down_28, CFG.volume, 0, volume_changed);
-    row(&ic_moon_28, "Do not disturb", on_off(CFG.dnd), CFG.dnd, toggle, &CFG.dnd);
-    row(&ic_zzz_28, "Bedtime mode", on_off(CFG.bedtime), CFG.bedtime, toggle, &CFG.bedtime);
-    row(&ic_bell_28, "Show new alerts", on_off(CFG.previews), CFG.previews, toggle, &CFG.previews);
+    row(&ic_moon_28, "Do not disturb", on_off(CFG.dnd), CFG.dnd, st_toggle, &CFG.dnd);
+    row(&ic_zzz_28, "Bedtime mode", on_off(CFG.bedtime), CFG.bedtime, st_toggle, &CFG.bedtime);
+    row(&ic_bell_28, "Show new alerts", on_off(CFG.previews), CFG.previews, st_toggle, &CFG.previews);
     snprintf(buf, sizeof(buf), "%d", S.notif_count);
     row(&ic_trash_28, "Clear notifications", buf, false, clear_alerts, NULL);
     note("Bedtime keeps the screen dark and silent until you press a button.");
@@ -637,8 +653,8 @@ static void battery_page(void)
                       : (S.batt.plugged ? (CFG.charge_limit && S.batt.percent >= 80 ? "Capped at 80%" : "Plugged in")
                                         : "On battery");
     row(&ic_bolt_28, state, buf, S.batt.charging, NULL, NULL);
-    row(&ic_heart_28, "Charge limit 80%", on_off(CFG.charge_limit), CFG.charge_limit, toggle, &CFG.charge_limit);
-    row(&ic_half_28, "Battery saver", on_off(CFG.saver), CFG.saver, toggle, &CFG.saver);
+    row(&ic_heart_28, "Charge limit 80%", on_off(CFG.charge_limit), CFG.charge_limit, st_toggle, &CFG.charge_limit);
+    row(&ic_half_28, "Battery saver", on_off(CFG.saver), CFG.saver, st_toggle, &CFG.saver);
     row(&ic_clock_28, "Always-on", AOD_NAMES[CFG.aod_mode], CFG.aod_mode != AOD_OFF, cycle_aod, NULL);
     snprintf(buf, sizeof(buf), "%d s", CFG.timeout_s);
     row(&ic_timer_28, "Screen timeout", buf, true, cycle_timeout, NULL);
@@ -712,7 +728,7 @@ static void apps_page(void)
     row(&ic_image_28, "Delete photos", buf, false, clear_photos, NULL);
     row(&ic_pin_28, "Delete saved maps", NULL, false, clear_maps, NULL);
     row(&ic_paw_28, "New pet", NULL, false, pet_reset, NULL);
-    row(&ic_phone_28, "Open setup page", NULL, false, open_page, (void *)phone_page);
+    row(&ic_phone_28, "Open setup page", NULL, false, st_open_page, (void *)st_phone_page);
 }
 
 /* ------------------------------------------------------------- date & time */
@@ -732,7 +748,7 @@ static void zone_step(lv_event_t *e)
 }
 
 /* A live clock with the zone under it: step until the time looks right. */
-static void zone_controls(int y)
+void st_zone_controls(int y)
 {
     char buf[24];
     struct tm t;
@@ -750,15 +766,15 @@ static void zone_controls(int y)
 
 static void zone_page(void)
 {
-    free_title("TIME ZONE", 40);
-    zone_controls(84);
-    free_text("Step in half hours until the time is right.", F16, C_DIM, 280);
+    st_free_title("TIME ZONE", 40);
+    st_zone_controls(84);
+    st_free_text("Step in half hours until the time is right.", F16, C_DIM, 280);
 }
 
 static void clock_step(lv_event_t *e)
 {
     svc_set_time(svc_time() + (int)(intptr_t)lv_event_get_user_data(e));
-    refresh();
+    st_refresh();
 }
 
 /* Setting the clock by hand, for when there is no phone or Wi-Fi to do it. */
@@ -771,9 +787,9 @@ static void clock_page(void)
     char buf[64];
     struct tm t;
     svc_localtime(&t);
-    free_title("SET THE CLOCK", 40);
+    st_free_title("SET THE CLOCK", 40);
     snprintf(buf, sizeof(buf), "%02d:%02d   %d/%d/%d", t.tm_hour, t.tm_min, t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
-    free_text(buf, F28, C_TEXT, 78);
+    st_free_text(buf, F28, C_TEXT, 78);
     for (size_t i = 0; i < 3; i++) {
         lv_obj_t *down = ui_round_btn(root, 60, C_SURF2, &ic_minus_28, C_TEXT, clock_step, (void *)(intptr_t)-units[i].step);
         lv_obj_align(down, LV_ALIGN_TOP_MID, -110, units[i].y);
@@ -787,10 +803,10 @@ static void time_page(void)
 {
     char buf[24];
     page_title("Date & time");
-    row(&ic_clock_28, "24-hour clock", on_off(CFG.clock_24h), CFG.clock_24h, toggle, &CFG.clock_24h);
+    row(&ic_clock_28, "24-hour clock", on_off(CFG.clock_24h), CFG.clock_24h, st_toggle, &CFG.clock_24h);
     zone_text(buf, sizeof(buf));
-    row(&ic_compass_28, "Time zone", buf, true, open_page, (void *)zone_page);
-    row(&ic_timer_28, "Set the clock", svc_time_valid() ? NULL : "Not set", false, open_page, (void *)clock_page);
+    row(&ic_compass_28, "Time zone", buf, true, st_open_page, (void *)zone_page);
+    row(&ic_timer_28, "Set the clock", svc_time_valid() ? NULL : "Not set", false, st_open_page, (void *)clock_page);
     note("The clock sets itself from your phone or Wi-Fi whenever it can.");
 }
 
@@ -862,7 +878,7 @@ static void wizard_start(lv_event_t *e);
 static void system_page(void)
 {
     page_title("System");
-    row(&ic_info_28, "About", NULL, false, open_page, (void *)about_page);
+    row(&ic_info_28, "About", NULL, false, st_open_page, (void *)about_page);
     row(&ic_bolt_28, "Allow update", NULL, false, allow_update, NULL);
     row(&ic_spark_28, "Run setup again", NULL, false, wizard_start, NULL);
     row(&ic_restart_28, "Restart", NULL, false, ask_restart, NULL);
@@ -876,200 +892,16 @@ static void root_page(void)
 {
     char buf[16];
     page_title("Settings");
-    row(&ic_wifi_28, "Connectivity", S.wifi.connected ? "Online" : NULL, S.wifi.connected, open_page, (void *)connectivity_page);
-    row(&ic_sun_28, "Display", NULL, false, open_page, (void *)display_page);
-    row(&ic_bell_28, "Sound & alerts", CFG.dnd ? "Quiet" : NULL, false, open_page, (void *)sound_page);
+    row(&ic_wifi_28, "Connectivity", S.wifi.connected ? "Online" : NULL, S.wifi.connected, st_open_page, (void *)connectivity_page);
+    row(&ic_sun_28, "Display", NULL, false, st_open_page, (void *)display_page);
+    row(&ic_bell_28, "Sound & alerts", CFG.dnd ? "Quiet" : NULL, false, st_open_page, (void *)sound_page);
     if (S.batt.percent >= 0) snprintf(buf, sizeof(buf), "%d%%", S.batt.percent);
     else buf[0] = 0;
-    row(&ic_bolt_28, "Battery", buf, false, open_page, (void *)battery_page);
-    row(&ic_grid_28, "Apps", NULL, false, open_page, (void *)apps_page);
-    row(&ic_clock_28, "Date & time", NULL, false, open_page, (void *)time_page);
-    row(&ic_gear_28, "System", NULL, false, open_page, (void *)system_page);
+    row(&ic_bolt_28, "Battery", buf, false, st_open_page, (void *)battery_page);
+    row(&ic_grid_28, "Apps", NULL, false, st_open_page, (void *)apps_page);
+    row(&ic_clock_28, "Date & time", NULL, false, st_open_page, (void *)time_page);
+    row(&ic_gear_28, "System", NULL, false, st_open_page, (void *)system_page);
 }
-
-/* ---------------------------------------------------------- first-boot setup */
-
-#define WIZARD_STEPS 6
-static bool wz_android;
-
-static void wizard_go(int step);
-
-static void wizard_next(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    wizard_go(wizard + 1);
-}
-
-/* The frame every step shares: a badge, a title, a line or two of text, and
- * progress dots along the bottom, the way phone setup screens do it. */
-static void wz_frame(const lv_image_dsc_t *icon, lv_color_t color, const char *title, const char *text)
-{
-    lv_obj_t *badge = ui_round_btn(root, 76, ui_tint(color, 26), icon, color, NULL, NULL);
-    lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 36);
-    free_text(title, F28, C_TEXT, 122);
-    if (text) free_text(text, F16, C_DIM, 162);
-
-    lv_obj_t *dots = ui_box(root, WIZARD_STEPS * 16, 10);
-    lv_obj_remove_flag(dots, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(dots, LV_ALIGN_BOTTOM_MID, 0, -14);
-    for (int i = 0; i < WIZARD_STEPS; i++) {
-        lv_obj_t *d = ui_box(dots, 8, 8);
-        lv_obj_set_style_radius(d, 4, 0);
-        lv_obj_set_style_bg_color(d, i == wizard ? ui_accent() : C_SURF2, 0);
-        lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
-        lv_obj_set_pos(d, 4 + i * 16, 1);
-    }
-}
-
-static lv_obj_t *wz_button(const char *text, bool primary, int y, lv_event_cb_t cb, void *arg)
-{
-    lv_obj_t *b = ui_pill_btn(root, text, primary ? ui_accent() : C_SURF2, primary ? lv_color_black() : C_TEXT, cb, arg);
-    lv_obj_set_height(b, 52);
-    lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 0, y);
-    return b;
-}
-
-static void wz_welcome(void)
-{
-    wz_frame(&ic_spark_48, ui_accent(), "Hi there", "Let's get your Orbit ready. It takes about a minute.");
-    wz_button("Start", true, -70, wizard_next, NULL);
-}
-
-static void wz_wifi(void)
-{
-    char buf[80];
-    lv_color_t c = lv_color_hex(0x58B6FF);
-    if (S.wifi.connected) {
-        snprintf(buf, sizeof(buf), "Connected to %s. The clock will set itself.", S.wifi.ssid);
-        wz_frame(&ic_check_48, C_GOOD, "You're online", buf);
-        wz_button("Next", true, -70, wizard_next, NULL);
-        return;
-    }
-    if (S.wifi.joining) {
-        snprintf(buf, sizeof(buf), "Joining %s...", pick_ssid);
-        wz_frame(&ic_wifi_48, c, "One moment", buf);
-        return;
-    }
-    wz_frame(&ic_wifi_48, c, "Connect to Wi-Fi",
-             S.wifi.failed ? "That didn't work. Check the password and try again."
-                           : "Used for the time, photos, maps and the assistant.");
-    wz_button("Choose network", true, -126, choose_network, NULL);
-    wz_button("Use my phone", false, -68, open_page, (void *)phone_page);
-    lv_obj_t *skip = ui_label(root, "Skip", F16, C_DIM);
-    lv_obj_add_flag(skip, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(skip, 14);
-    lv_obj_add_event_cb(skip, wizard_next, LV_EVENT_SHORT_CLICKED, NULL);
-    lv_obj_align(skip, LV_ALIGN_BOTTOM_MID, 0, -36);
-}
-
-static void wz_time(void)
-{
-    free_title("YOUR TIME ZONE", 40);
-    zone_controls(74);
-    free_text(svc_time_valid() ? "Step until the time matches your phone." : "The time appears once Wi-Fi or your phone connects.",
-              F16, C_DIM, 262);
-    lv_obj_t *h = ui_pill_btn(root, CFG.clock_24h ? "24-hour" : "12-hour", C_SURF2, C_TEXT, toggle, &CFG.clock_24h);
-    lv_obj_set_height(h, 46);
-    lv_obj_align(h, LV_ALIGN_BOTTOM_MID, -72, -62);
-    lv_obj_t *n = ui_pill_btn(root, "Next", ui_accent(), lv_color_black(), wizard_next, NULL);
-    lv_obj_set_height(n, 46);
-    lv_obj_align(n, LV_ALIGN_BOTTOM_MID, 72, -62);
-}
-
-static void wz_phone_kind(lv_event_t *e)
-{
-    wz_android = lv_event_get_user_data(e) != NULL;
-    refresh();
-}
-
-static void wz_phone(void)
-{
-    lv_color_t c = lv_color_hex(0x4ADE9B);
-    if (S.link.status == LINK_CONNECTED && !S.link.keys_mode) {
-        wz_frame(&ic_check_48, C_GOOD, "Phone connected", S.link.name[0] ? S.link.name : "Notifications and music are on their way.");
-        wz_button("Next", true, -70, wizard_next, NULL);
-        return;
-    }
-    wz_frame(&ic_phone_48, c, "Pair your phone",
-             wz_android ? "Install Gadgetbridge, tap +, and add Orbit as a Bangle.js."
-                        : "Open Settings > Bluetooth on your iPhone and tap Orbit.");
-    lv_obj_t *a = ui_pill_btn(root, "iPhone", wz_android ? C_SURF2 : c, wz_android ? C_TEXT : lv_color_black(), wz_phone_kind, NULL);
-    lv_obj_set_height(a, 46);
-    lv_obj_align(a, LV_ALIGN_BOTTOM_MID, -74, -126);
-    lv_obj_t *b = ui_pill_btn(root, "Android", wz_android ? c : C_SURF2, wz_android ? lv_color_black() : C_TEXT, wz_phone_kind,
-                              (void *)1);
-    lv_obj_set_height(b, 46);
-    lv_obj_align(b, LV_ALIGN_BOTTOM_MID, 74, -126);
-    wz_button("Later", false, -62, wizard_next, NULL);
-}
-
-static void wz_accent(lv_event_t *e)
-{
-    CFG.accent = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    changed();
-}
-
-static void wz_face(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    CFG.face = (uint8_t)((CFG.face + 1) % FACE_COUNT);
-    changed();
-}
-
-static void wz_style(void)
-{
-    char buf[24];
-    wz_frame(&ic_face_48, ui_accent(), "Make it yours", "Pick a colour and a watch face. Both can change later.");
-    for (int i = 0; i < ACCENT_COUNT; i++) {
-        lv_obj_t *s = ui_round_btn(root, 46, ui_accent_at(i), i == CFG.accent ? &ic_check_28 : NULL, lv_color_black(), wz_accent,
-                                   (void *)(uintptr_t)i);
-        lv_obj_align(s, LV_ALIGN_TOP_MID, (i - 2) * 56 - 28, 222);
-    }
-    snprintf(buf, sizeof(buf), "Face: %s", FACE_NAMES[CFG.face]);
-    lv_obj_t *f = ui_pill_btn(root, buf, C_SURF2, C_TEXT, wz_face, NULL);
-    lv_obj_set_height(f, 46);
-    lv_obj_align(f, LV_ALIGN_BOTTOM_MID, 0, -124);
-    wz_button("Next", true, -62, wizard_next, NULL);
-}
-
-static void wizard_finish(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    wizard = -1;
-    CFG.setup_done = 1;
-    settings_changed();
-    shell_home();
-}
-
-static void wz_tips(void)
-{
-    free_text("You're all set", F28, C_TEXT, 50);
-    free_text("Swipe down for quick settings\nSwipe up for notifications\nSwipe sideways for tiles\n"
-              "Side button opens apps\nHold it to talk to the assistant",
-              F20, C_DIM, 100);
-    wz_button("Done", true, -62, wizard_finish, NULL);
-    lv_obj_t *dots = ui_label(root, "Everything here is also in Settings.", F14, C_FAINT);
-    lv_obj_align(dots, LV_ALIGN_BOTTOM_MID, 0, -30);
-}
-
-static void wizard_go(int step)
-{
-    static const page_fn steps[WIZARD_STEPS] = {wz_welcome, wz_wifi, wz_time, wz_phone, wz_style, wz_tips};
-    if (step >= WIZARD_STEPS) step = WIZARD_STEPS - 1;
-    wizard = step;
-    depth = 1;
-    stack[0] = steps[step];
-    scroll_y[0] = 0;
-    show();
-}
-
-#ifdef ORBIT_SIM
-void wizard_sim_step(int step)
-{
-    wizard_go(step);
-}
-#endif
 
 /* "Run setup again" from System. */
 static void wizard_start(lv_event_t *e)
@@ -1084,9 +916,9 @@ static void on_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_SETTINGS || e == EVT_WIFI || e == EVT_LINK || e == EVT_BATTERY || e == EVT_PHOTOS) refresh();
+    if (e == EVT_SETTINGS || e == EVT_WIFI || e == EVT_LINK || e == EVT_BATTERY || e == EVT_PHOTOS) st_refresh();
     /* Clocks on the time pages tick over with the minute. */
-    if (e == EVT_MINUTE && !list) refresh();
+    if (e == EVT_MINUTE && !list) st_refresh();
 }
 
 static bool page_back(void)
@@ -1095,11 +927,7 @@ static bool page_back(void)
         pop_to(depth - 1);
         return true;
     }
-    if (wizard > 0) {
-        wizard_go(wizard - 1);
-        return true;
-    }
-    return false;
+    return wizard_back();
 }
 
 static void closed(lv_event_t *e)
@@ -1109,7 +937,7 @@ static void closed(lv_event_t *e)
     if (lv_event_get_target_obj(e) != root) return;
     root = NULL, list = NULL, depth = 0, show_pending = false;
     /* Leaving setup half-way does not count as done: it returns next start. */
-    wizard = -1;
+    wizard_reset();
 }
 
 static void begin(lv_obj_t *scr)
@@ -1139,7 +967,7 @@ void settings_open_page(const char *page)
 static void settings_create(lv_obj_t *scr)
 {
     begin(scr);
-    wizard = -1;
+    wizard_reset();
     push(root_page);
     if (pending_page) {
         page_fn p = pending_page;

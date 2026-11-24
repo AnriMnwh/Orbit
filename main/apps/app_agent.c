@@ -270,7 +270,7 @@ static void agent_create(lv_obj_t *scr)
         cur_reach = 0, cur_gain = 0, cur_level = 0;
         lv_image_set_src(a_img, &frame_dsc);
         lv_obj_center(a_img);
-        ui_timer(scr, agent_frame, 45, NULL);
+        ui_timer_visual(scr, agent_frame, 45, NULL);
     } else {
         agent_free(); /* out of memory: the app still works, just without the glow */
     }

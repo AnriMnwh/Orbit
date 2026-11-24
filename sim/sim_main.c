@@ -59,9 +59,10 @@ void sim_swipe(int x0, int y0, int x1, int y1, uint32_t ms)
 {
     touch.x = x0, touch.y = y0, touch.down = true;
     sim_run(30);
+    uint32_t span = ms ? ms : 1; /* a zero-length swipe still has to move */
     for (uint32_t t = 0; t <= ms; t += 10) {
-        touch.x = x0 + (int)((x1 - x0) * (int)t / (int)ms);
-        touch.y = y0 + (int)((y1 - y0) * (int)t / (int)ms);
+        touch.x = x0 + (int)((x1 - x0) * (int)t / (int)span);
+        touch.y = y0 + (int)((y1 - y0) * (int)t / (int)span);
         sim_run(10);
     }
     touch.down = false;

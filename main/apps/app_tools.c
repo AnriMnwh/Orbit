@@ -232,11 +232,11 @@ static void workout_paint(lv_timer_t *t)
     uint32_t s = K.active ? (svc_millis() - K.start_ms) / 1000 : 0;
     uint32_t steps = K.active && S.steps >= K.start_steps ? S.steps - K.start_steps : 0;
     snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
-    lv_label_set_text(wk_time, buf);
+    ui_label_set(wk_time, buf);
     unsigned metres = (unsigned)(steps * 3 / 4);
     snprintf(buf, sizeof(buf), "%u steps  " LV_SYMBOL_BULLET "  %u.%02u km  " LV_SYMBOL_BULLET "  %u kcal", (unsigned)steps,
              metres / 1000, metres % 1000 / 10, (unsigned)(steps / 25));
-    lv_label_set_text(wk_stats, K.active ? buf : "Start a walk or run");
+    ui_label_set(wk_stats, K.active ? buf : "Start a walk or run");
     lv_obj_set_style_bg_color(wk_go, K.active ? C_BAD : lv_color_hex(WORK_COLOR), 0);
     ui_icon_set(ui_btn_icon(wk_go), K.active ? &ic_stop_48 : &ic_play_48, lv_color_black());
 }
@@ -263,7 +263,7 @@ static void workout_create(lv_obj_t *scr)
     wk_stats = caption(scr, "", 8);
     wk_go = ui_round_btn(scr, 104, lv_color_hex(WORK_COLOR), &ic_play_48, lv_color_black(), workout_go, NULL);
     lv_obj_align(wk_go, LV_ALIGN_CENTER, 0, 108);
-    ui_timer(scr, workout_paint, 1000, NULL);
+    ui_timer_visual(scr, workout_paint, 1000, NULL);
     workout_paint(NULL);
 }
 
@@ -285,9 +285,9 @@ static void presenter_paint(lv_timer_t *t)
     char buf[16];
     uint32_t s = (svc_millis() - pr_start) / 1000;
     snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(s / 60), (unsigned)(s % 60));
-    lv_label_set_text(pr_time, buf);
+    ui_label_set(pr_time, buf);
     bool up = S.link.keys_mode && S.link.status == LINK_CONNECTED;
-    lv_label_set_text(pr_state, up ? S.link.name : "Pair \"Orbit Keys\" on the computer");
+    ui_label_set(pr_state, up ? S.link.name : "Pair \"Orbit Keys\" on the computer");
 }
 
 static void presenter_key(lv_event_t *e)
@@ -320,7 +320,7 @@ static void presenter_create(lv_obj_t *scr)
     lv_obj_align(blank, LV_ALIGN_BOTTOM_MID, 0, -30);
 
     lv_obj_add_event_cb(scr, presenter_closed, LV_EVENT_DELETE, NULL);
-    ui_timer(scr, presenter_paint, 500, NULL);
+    ui_timer_visual(scr, presenter_paint, 500, NULL);
     pr_keys_here = !S.link.keys_mode;
     if (pr_keys_here) svc_link_keys_mode(true);
     presenter_paint(NULL);

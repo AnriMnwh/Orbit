@@ -61,6 +61,12 @@ static const city_t CITIES[] = {
 static uint32_t wc_chosen = (1u << 4) | (1u << 7) | (1u << 21); /* New York, London, Tokyo */
 static bool wc_loaded;
 static lv_obj_t *wc_list;
+typedef struct {
+    int city;
+    lv_obj_t *day, *time, *half; /* half is NULL on a 24-hour clock */
+} wc_card_t;
+static wc_card_t wc_cards[24]; /* one per chosen city, at most CITY_COUNT */
+static int wc_cards_n;
 
 /* Day of the month of the nth Sunday (nth = 0: the last one). */
 static int sunday(int y, int m, int nth)
@@ -101,6 +107,7 @@ static int city_offset(const city_t *c, time_t now)
 }
 
 static void world_build(void);
+static void world_tick(void);
 
 static void world_rebuild(void *unused)
 {
@@ -118,20 +125,50 @@ static void world_toggle(lv_event_t *e)
     lv_async_call(world_rebuild, NULL); /* not from inside the row's own event */
 }
 
+/* The two texts on a city card that change with time: the day line and the clock. */
+static void world_texts(int i, time_t now, char *day_line, size_t day_len, char *clock, size_t clock_len, const char **half)
+{
+    long today = (long)((now + (time_t)CFG.tz_minutes * 60) / 86400);
+    int off = city_offset(&CITIES[i], now);
+    time_t there = now + (time_t)off * 60;
+    struct tm t = tm_of(there);
+    long day = (long)(there / 86400);
+    int diff = off - CFG.tz_minutes;
+    const char *when = day > today ? "Tomorrow" : (day < today ? "Yesterday" : "Today");
+    if (diff == 0) snprintf(day_line, day_len, "%s, same time", when);
+    else if (diff % 60 == 0) snprintf(day_line, day_len, "%s, %+d h", when, diff / 60);
+    else snprintf(day_line, day_len, "%s, %+d:%02d h", when, diff / 60, abs(diff) % 60);
+    fmt_clock(clock, clock_len, &t, false);
+    *half = fmt_ampm(&t);
+}
+
+/* Once a minute only these labels change, so the cards stay and just get new text. */
+static void world_tick(void)
+{
+    time_t now = svc_time();
+    for (int k = 0; k < wc_cards_n; k++) {
+        char day_line[48], clock[12];
+        const char *half;
+        world_texts(wc_cards[k].city, now, day_line, sizeof(day_line), clock, sizeof(clock), &half);
+        ui_label_set(wc_cards[k].day, day_line);
+        ui_label_set(wc_cards[k].time, clock);
+        if (wc_cards[k].half) ui_label_set(wc_cards[k].half, half);
+    }
+}
+
 static void world_build(void)
 {
     lv_color_t c = lv_color_hex(WORLD_COLOR);
     time_t now = svc_time();
-    long today = (long)((now + (time_t)CFG.tz_minutes * 60) / 86400);
-    char buf[48];
     int32_t keep = lv_obj_get_scroll_y(wc_list);
     lv_obj_clean(wc_list);
+    wc_cards_n = 0;
 
     for (int i = 0; i < CITY_COUNT; i++) {
         if (!(wc_chosen & (1u << i))) continue;
-        int off = city_offset(&CITIES[i], now);
-        time_t there = now + (time_t)off * 60;
-        struct tm t = tm_of(there);
+        char day_line[48], clock[12];
+        const char *half;
+        world_texts(i, now, day_line, sizeof(day_line), clock, sizeof(clock), &half);
         lv_obj_t *card = ui_box(wc_list, 330, 96);
         lv_obj_set_style_radius(card, 30, 0);
         lv_obj_set_style_bg_color(card, C_SURF, 0);
@@ -141,20 +178,17 @@ static void world_build(void)
 
         lv_obj_t *name = ui_label(card, CITIES[i].name, F24, C_TEXT);
         lv_obj_align(name, LV_ALIGN_TOP_LEFT, 22, 16);
-        long day = (long)(there / 86400);
-        int diff = off - CFG.tz_minutes;
-        const char *when = day > today ? "Tomorrow" : (day < today ? "Yesterday" : "Today");
-        if (diff == 0) snprintf(buf, sizeof(buf), "%s, same time", when);
-        else if (diff % 60 == 0) snprintf(buf, sizeof(buf), "%s, %+d h", when, diff / 60);
-        else snprintf(buf, sizeof(buf), "%s, %+d:%02d h", when, diff / 60, abs(diff) % 60);
-        lv_obj_align(ui_label(card, buf, F16, C_DIM), LV_ALIGN_BOTTOM_LEFT, 22, -16);
+        lv_obj_t *day = ui_label(card, day_line, F16, C_DIM);
+        lv_obj_align(day, LV_ALIGN_BOTTOM_LEFT, 22, -16);
 
-        char clock[12];
-        fmt_clock(clock, sizeof(clock), &t, false);
-        const char *half = fmt_ampm(&t);
         lv_obj_t *time = ui_label(card, clock, F36, c);
         lv_obj_align(time, LV_ALIGN_RIGHT_MID, half[0] ? -58 : -22, 0);
-        if (half[0]) lv_obj_align(ui_label(card, half, F16, c), LV_ALIGN_RIGHT_MID, -22, 8);
+        lv_obj_t *ampm = NULL;
+        if (half[0]) {
+            ampm = ui_label(card, half, F16, c);
+            lv_obj_align(ampm, LV_ALIGN_RIGHT_MID, -22, 8);
+        }
+        wc_cards[wc_cards_n++] = (wc_card_t){.city = i, .day = day, .time = time, .half = ampm};
     }
 
     lv_obj_t *head = ui_label(wc_list, wc_chosen ? "ADD A CITY" : "PICK A CITY", F16, C_DIM);
@@ -173,13 +207,15 @@ static void world_event(evt_t e, void *data, void *user)
 {
     LV_UNUSED(data);
     LV_UNUSED(user);
-    if (e == EVT_MINUTE || e == EVT_SETTINGS) world_build();
+    if (e == EVT_SETTINGS) world_build();
+    else if (e == EVT_MINUTE) world_tick();
 }
 
 static void world_closed(lv_event_t *e)
 {
     LV_UNUSED(e);
     wc_list = NULL;
+    wc_cards_n = 0;
 }
 
 static void world_create(lv_obj_t *scr)
@@ -457,6 +493,7 @@ const app_t app_month = {
 
 static lv_obj_t *mo_disc, *mo_name, *mo_lit, *mo_next;
 static double mo_shift; /* days added to the clock; only the simulator sets it */
+static double mo_place_lat; /* latitude of the saved place, read when the app opens */
 
 /* Days since the last new moon. */
 static double moon_age(void)
@@ -474,9 +511,7 @@ static void moon_draw(lv_event_t *e)
     int cx = (a.x1 + a.x2) / 2, cy = (a.y1 + a.y2) / 2;
     double phase = moon_age() / SYNODIC;
     /* South of the equator the moon is seen the other way up. */
-    double place[2] = {0, 0};
-    svc_kv_load("place", place, sizeof(place));
-    bool flip = (S.gps.fix ? S.gps.lat : place[0]) < 0;
+    bool flip = (S.gps.fix ? S.gps.lat : mo_place_lat) < 0;
 
     lv_draw_rect_dsc_t d;
     lv_draw_rect_dsc_init(&d);
@@ -538,6 +573,10 @@ static void moon_event(evt_t e, void *data, void *user)
 
 static void moon_create(lv_obj_t *scr)
 {
+    /* The saved place only picks which way up the moon is drawn; read it once, not per repaint. */
+    double place[2] = {0, 0};
+    svc_kv_load("place", place, sizeof(place));
+    mo_place_lat = place[0];
     mo_disc = ui_box(scr, MOON_R * 2 + 2, MOON_R * 2 + 2);
     lv_obj_remove_flag(mo_disc, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(mo_disc, LV_ALIGN_CENTER, 0, -52);

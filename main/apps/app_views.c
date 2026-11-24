@@ -128,7 +128,7 @@ static void camera_paint(void)
     case CAM_ERROR: snprintf(buf, sizeof(buf), "Can't reach camera"); break;
     default: snprintf(buf, sizeof(buf), "LUMIX remote"); break;
     }
-    lv_label_set_text(c_top, buf);
+    ui_label_set(c_top, buf);
 
     if (ready) {
         char batt[16] = "", shots[24] = "";
@@ -140,7 +140,7 @@ static void camera_paint(void)
     } else {
         snprintf(buf, sizeof(buf), "%s", S.cam.note);
     }
-    lv_label_set_text(c_sub, buf);
+    ui_label_set(c_sub, buf);
 
     lv_obj_t *controls[] = {c_shutter, c_rec, c_delay, c_delay_label};
     for (size_t i = 0; i < sizeof(controls) / sizeof(controls[0]); i++) {
@@ -153,16 +153,16 @@ static void camera_paint(void)
     lv_obj_set_style_bg_color(c_rec, S.cam.recording ? C_BAD : C_SURF2, 0);
     ui_icon_set(ui_btn_icon(c_rec), S.cam.recording ? &ic_stop_48 : &ic_rec_48, S.cam.recording ? C_TEXT : C_BAD);
     snprintf(buf, sizeof(buf), c_delay_s ? "%ds" : "Off", c_delay_s);
-    lv_label_set_text(c_delay_label, buf);
+    ui_label_set(c_delay_label, buf);
     if (c_countdown > 0) snprintf(buf, sizeof(buf), "%d", c_countdown);
     else if (c_seq) snprintf(buf, sizeof(buf), "%d", c_seq_shots);
     else buf[0] = 0;
-    lv_label_set_text(c_count, buf);
+    ui_label_set(c_count, buf);
 
     if (c_seq) snprintf(buf, sizeof(buf), "Next in %d s", c_seq_left);
     else if (c_interval_s) snprintf(buf, sizeof(buf), "Time-lapse  %d s", c_interval_s);
     else snprintf(buf, sizeof(buf), "Time-lapse off");
-    lv_label_set_text(lv_obj_get_child(c_interval, 0), buf);
+    ui_label_set(lv_obj_get_child(c_interval, 0), buf);
     if (ready) lv_obj_remove_flag(c_interval, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(c_interval, LV_OBJ_FLAG_HIDDEN);
 }

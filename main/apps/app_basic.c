@@ -45,7 +45,7 @@ static void torch_blink(lv_timer_t *t)
 static void torch_closed(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if (S.display == DISPLAY_ACTIVE) svc_brightness(CFG.brightness);
+    if (S.display == DISPLAY_ACTIVE) svc_brightness(shell_brightness()); /* keeps the battery-saver cap */
 }
 
 static void torch_create(lv_obj_t *scr)
@@ -118,8 +118,8 @@ static void timer_paint(void)
         if (fresh) lv_obj_remove_flag(t_right, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(t_right, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_label_set_text(t_time, buf);
-    lv_label_set_text(t_title, T.sw_mode ? "STOPWATCH" : "TIMER");
+    ui_label_set(t_time, buf);
+    ui_label_set(t_title, T.sw_mode ? "STOPWATCH" : "TIMER");
     lv_obj_set_style_arc_color(t_arc, c, LV_PART_INDICATOR);
 }
 
@@ -136,7 +136,7 @@ static void timer_watch(lv_timer_t *t)
         lv_timer_delete(T.watch);
         T.watch = NULL;
     }
-    timer_paint();
+    if (S.display == DISPLAY_ACTIVE || !T.running) timer_paint(); /* a running readout is parked while resting */
 }
 
 static void timer_go(lv_event_t *e)
@@ -152,7 +152,7 @@ static void timer_go(lv_event_t *e)
     } else if (T.left_ms > 0) {
         T.end_ms = svc_millis() + (uint32_t)T.left_ms;
         T.running = true;
-        if (!T.watch) T.watch = lv_timer_create(timer_watch, 250, NULL);
+        if (!T.watch) T.watch = lv_timer_create(timer_watch, 1000, NULL);
     }
     timer_paint();
 }
@@ -185,7 +185,7 @@ void timer_start(int seconds)
     T.left_ms = seconds * 1000;
     T.end_ms = svc_millis() + (uint32_t)T.left_ms;
     T.running = true;
-    if (!T.watch) T.watch = lv_timer_create(timer_watch, 250, NULL);
+    if (!T.watch) T.watch = lv_timer_create(timer_watch, 1000, NULL);
     timer_paint();
 }
 
@@ -254,7 +254,7 @@ static void clock_screen(lv_obj_t *scr, bool stopwatch)
     t_right = ui_round_btn(scr, 72, C_SURF2, &ic_plus_48, C_TEXT, timer_right_btn, NULL);
     lv_obj_align(t_right, LV_ALIGN_CENTER, 106, 88);
 
-    ui_timer(scr, timer_refresh, 100, NULL);
+    ui_timer_visual(scr, timer_refresh, 100, NULL);
     timer_paint();
 }
 

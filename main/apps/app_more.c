@@ -109,6 +109,7 @@ static struct {
     int16_t day;
     uint16_t steps[7];
 } F = {.day = -1};
+static uint8_t fit_saved[sizeof(F)]; /* what flash holds, to skip identical writes */
 
 static lv_obj_t *fit_scr, *fit_arc, *fit_steps, *fit_stats, *fit_bars[7];
 
@@ -118,14 +119,14 @@ static void fitness_paint(void)
     char buf[48];
     snprintf(buf, sizeof(buf), "%u", (unsigned)S.steps);
     lv_label_set_text(fit_steps, buf);
-    ui_arc_set(fit_arc, (int)(S.steps * 100 / CFG.step_goal));
+    ui_arc_set(fit_arc, CFG.step_goal ? (int)(S.steps * 100 / CFG.step_goal) : 0);
     /* Rough estimates: 0.75 m and 0.04 kcal a step. */
     unsigned metres = (unsigned)(S.steps * 3 / 4), kcal = (unsigned)(S.steps / 25);
     snprintf(buf, sizeof(buf), "%u.%u km   " LV_SYMBOL_BULLET "   %u kcal", metres / 1000, metres % 1000 / 100, kcal);
     lv_label_set_text(fit_stats, buf);
     for (int i = 0; i < 7; i++) {
         unsigned v = i == 6 ? S.steps : F.steps[i];
-        int h = 6 + (int)(v > CFG.step_goal ? 54 : v * 54 / CFG.step_goal);
+        int h = 6 + (int)(v > CFG.step_goal || !CFG.step_goal ? 54 : v * 54 / CFG.step_goal);
         lv_obj_set_height(fit_bars[i], h);
         lv_obj_set_style_bg_color(fit_bars[i], i == 6 ? lv_color_hex(FIT_COLOR) : C_SURF2, 0);
     }
@@ -343,7 +344,10 @@ static void duties(evt_t e, void *data, void *user)
         S.steps = 0;
     }
     F.steps[6] = (uint16_t)(S.steps > 65535 ? 65535 : S.steps);
-    if (now.tm_min % 10 == 0) svc_kv_save("fit", &F, sizeof(F));
+    if (now.tm_min % 10 == 0 && memcmp(&F, fit_saved, sizeof(F)) != 0) {
+        svc_kv_save("fit", &F, sizeof(F)); /* a flash commit, so only when something moved */
+        memcpy(fit_saved, &F, sizeof(F));
+    }
     fitness_paint();
 }
 
@@ -355,6 +359,7 @@ void duties_init(void)
     A.fired = 0;
     if (A.hour > 23 || A.minute > 59) A.hour = 7, A.minute = 0, A.on = 0;
     if (svc_kv_load("fit", &F, sizeof(F))) {
+        memcpy(fit_saved, &F, sizeof(F));
         struct tm now;
         svc_localtime(&now);
         /* Carry today's steps across a restart, but not across midnight. */

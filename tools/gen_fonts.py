@@ -21,7 +21,6 @@ FONTS = [
     ("font_num_hero_light", 150, 260, DIGITS),
     ("font_num_big", 84, 520, DIGITS + ".-%"),
     ("font_num_mid", 60, 560, DIGITS + ".-%/ "),
-    ("font_num_heavy", 84, 900, DIGITS),
 ]
 
 

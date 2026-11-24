@@ -634,7 +634,7 @@ static void pet_create(lv_obj_t *scr)
 
     lv_obj_add_event_cb(scr, pet_closed, LV_EVENT_DELETE, NULL);
     bus_watch(scr, pet_event, NULL);
-    ui_timer(scr, pet_frame, 60, NULL);
+    ui_timer_visual(scr, pet_frame, 60, NULL);
     pet_paint();
 }
 
@@ -659,7 +659,7 @@ const char *pet_command(const char *action)
     else if (strcmp(action, "feed") == 0) P.food = bump(P.food, 2500);
     else if (strcmp(action, "play") == 0) P.joy = bump(P.joy, 2200), P.energy = bump(P.energy, -900);
     else if (strcmp(action, "wash") == 0) P.clean = FULL, P.poops = 0;
-    pet_save();
+    if (strcmp(action, "status") != 0) pet_save(); /* a status read changes nothing worth a flash write */
     pet_paint();
     snprintf(out, sizeof(out), "Done. The pet is now %s.", moods[pet_mood()]);
     return out;

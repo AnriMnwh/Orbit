@@ -42,6 +42,9 @@ lv_obj_t *ui_box(lv_obj_t *parent, int w, int h);
 lv_obj_t *ui_label(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color);
 /* Single line, centred, truncated with dots to `width`. */
 lv_obj_t *ui_label_fit(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color, int width);
+/* lv_label_set_text() that does nothing when the text is unchanged: LVGL
+ * would otherwise free, reallocate and re-lay-out the string every time. */
+void ui_label_set(lv_obj_t *label, const char *text);
 lv_obj_t *ui_icon(lv_obj_t *parent, const lv_image_dsc_t *src, lv_color_t color);
 void ui_icon_set(lv_obj_t *icon, const lv_image_dsc_t *src, lv_color_t color);
 /* Small caption at the top of an app screen. */
@@ -59,6 +62,12 @@ void ui_arc_set(lv_obj_t *arc, int percent);
 
 /* Timer that dies with `owner`, so screens need no teardown code. */
 lv_timer_t *ui_timer(lv_obj_t *owner, lv_timer_cb_t cb, uint32_t period_ms, void *user);
+/* Same, but for timers that only repaint the screen: ui_timers_rest() parks
+ * them while the display rests (nothing is visible) and wakes them, with one
+ * immediate run, when it returns. Timers whose job matters in the background
+ * must use ui_timer() instead. */
+lv_timer_t *ui_timer_visual(lv_obj_t *owner, lv_timer_cb_t cb, uint32_t period_ms, void *user);
+void ui_timers_rest(bool resting);
 
 /* The current time, curved along the top of the screen. */
 lv_obj_t *ui_time_text(lv_obj_t *screen);
@@ -99,9 +108,12 @@ void shell_toast(const char *text);
 void shell_wake(void);              /* any user activity */
 void shell_raised(void);            /* wrist raise: wakes unless a quiet mode is on */
 void shell_rest(void);              /* drop to always-on or dark now */
+int shell_brightness(void);       /* the awake brightness, with the battery-saver cap applied */
 void shell_button(int button, int press);
 void shell_show_tile(int col, int row);
+extern const char *const FACE_NAMES[FACE_COUNT]; /* "Digital", "Analog", ... (face_picker.c) */
 void shell_rebuild_tiles(void);     /* after CFG.tiles changed */
+void home_sync(void);              /* bring tiles that skipped refreshes while hidden up to date */
 void shell_notification(const notif_t *n); /* open one notification in full */
 void settings_open_page(const char *page); /* jump straight to a Settings subpage */
 

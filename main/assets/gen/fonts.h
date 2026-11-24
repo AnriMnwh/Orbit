@@ -6,4 +6,3 @@ extern const lv_font_t font_num_hero_bold;
 extern const lv_font_t font_num_hero_light;
 extern const lv_font_t font_num_big;
 extern const lv_font_t font_num_mid;
-extern const lv_font_t font_num_heavy;

@@ -46,7 +46,7 @@ static bool quiet(void)
     return CFG.bedtime || S.theatre;
 }
 
-static int active_brightness(void)
+int shell_brightness(void)
 {
     return CFG.saver && CFG.brightness > SAVER_BRIGHTNESS ? SAVER_BRIGHTNESS : CFG.brightness;
 }
@@ -60,18 +60,22 @@ static void rest_touched(lv_event_t *e)
     shell_wake();
 }
 
+static void overlay_close(void);
+
 void shell_rest(void)
 {
     if (S.display != DISPLAY_ACTIVE) return;
     /* On the charger the always-on screen is free, so show it regardless. */
     bool lit = !quiet() && ((CFG.aod_mode != AOD_OFF && !CFG.saver) || S.batt.plugged);
     S.display = lit ? DISPLAY_AOD : DISPLAY_OFF;
+    overlay_close(); /* a forgotten power menu or alert must not sit on the AOD */
     rest_scr = lit ? aod_create() : ui_screen();
     lv_obj_add_flag(rest_scr, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(rest_scr, rest_touched, LV_EVENT_PRESSED, NULL);
     lv_screen_load(rest_scr);
     svc_brightness(lit ? AOD_BRIGHTNESS : 0);
     svc_display_active(false);
+    ui_timers_rest(true);
     if (tick_timer) lv_timer_set_period(tick_timer, 1000);
     rest_since = svc_millis();
     bus_emit(EVT_DISPLAY, NULL);
@@ -92,8 +96,10 @@ void shell_wake(void)
     lv_screen_load(home_scr);
     if (rest_scr) lv_obj_delete_async(rest_scr);
     rest_scr = NULL;
-    svc_brightness(active_brightness());
+    svc_brightness(shell_brightness());
     svc_display_active(true);
+    ui_timers_rest(false);
+    home_sync();
     if (tick_timer) lv_timer_set_period(tick_timer, 250);
     bus_emit(EVT_DISPLAY, NULL);
 }
@@ -217,6 +223,7 @@ void shell_back(void)
 
 void shell_show_tile(int col, int row)
 {
+    home_sync();
     lv_tileview_set_tile_by_index(tiles, (uint32_t)col, (uint32_t)row, LV_ANIM_ON);
 }
 
@@ -561,7 +568,7 @@ static void on_event(evt_t e, void *data, void *user)
     } else if (e == EVT_SETTINGS) {
         lock_refresh();
         if (S.display == DISPLAY_ACTIVE) {
-            svc_brightness(active_brightness());
+            svc_brightness(shell_brightness());
             if (quiet()) shell_rest(); /* bedtime or theatre just switched on */
         }
     }
@@ -588,9 +595,16 @@ static void tick(lv_timer_t *t)
 
 /* ------------------------------------------------------------------ tiles */
 
+static void tile_scroll_begin(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    home_sync(); /* a tile that skipped refreshes must be fresh before it slides in */
+}
+
 static void tile_changed(lv_event_t *e)
 {
     LV_UNUSED(e);
+    home_sync();
     lv_obj_t *t = lv_tileview_get_tile_active(tiles);
     int col = t ? lv_obj_get_x(t) / SCR : 1, row = t ? lv_obj_get_y(t) / SCR : 1;
     if (row != 1 || col == 1) {
@@ -651,6 +665,7 @@ static void build_tiles(void)
         lv_obj_set_pos(d, 6 + i * 20, 2);
     }
     lv_obj_add_event_cb(tiles, tile_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(tiles, tile_scroll_begin, LV_EVENT_SCROLL_BEGIN, NULL);
 
     lv_obj_update_layout(tiles);
     lv_tileview_set_tile_by_index(tiles, 1, 1, LV_ANIM_OFF);
@@ -714,7 +729,7 @@ void shell_init(void)
     lv_screen_load(home_scr);
 
     S.display = DISPLAY_ACTIVE;
-    svc_brightness(active_brightness());
+    svc_brightness(shell_brightness());
     bus_watch(home_scr, on_event, NULL);
     tick_timer = lv_timer_create(tick, 250, NULL);
     boot_animation();
