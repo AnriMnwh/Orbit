@@ -752,7 +752,7 @@ private fun FaceEditDialog(faceId: Int, config: WatchConfig, accentColor: Color,
                     )
                 }
                 Picker("Style", styles, currentStyle) { newStyle ->
-                    val next = config.styles.toMutableList().apply { while (size < 4) add(0); this[faceId] = newStyle }
+                    val next = config.styles.toMutableList().apply { while (size < WatchConfig.FACES.size) add(0); this[faceId] = newStyle }
                     Hub.service?.configure("styles", next)
                 }
                 Accents(config.accent) { Hub.service?.configure("accent", it) }

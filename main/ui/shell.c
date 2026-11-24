@@ -190,7 +190,7 @@ void shell_open(const app_t *app)
 
 static void overlay_close(void)
 {
-    if (overlay) lv_obj_delete(overlay);
+    if (overlay) lv_obj_delete_async(overlay);
     overlay = NULL;
 }
 
@@ -728,6 +728,7 @@ void orbit_boot(void)
     S.day.items = lv_malloc_zeroed(sizeof(agenda_item_t) * DAY_MAX);
     settings_load();
     macros_load();
+    custom_faces_load();
     duties_init(); /* restores alarm and step state before the UI reads it */
     shell_init();
 }

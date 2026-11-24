@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -87,7 +88,14 @@ void notif_clear(void)
 
 /* ---------------------------------------------------------------- settings */
 
-#define CFG_VERSION 6
+#define CFG_VERSION 7
+
+/* Settings v5 and v6 stored only the fields up to step_goal (v5 left
+ * custom_face as padding), with the old face numbering (Digital, Analog,
+ * Photo, Vision, TV wall, Modular, Minimal, Custom) and complication
+ * numbering (Battery, Steps, Weather, Day, None). */
+#define CFG_OLD_SIZE offsetof(settings_t, face_order)
+_Static_assert(CFG_OLD_SIZE == 30, "settings v5/v6 prefix layout changed");
 
 settings_t CFG;
 
@@ -112,15 +120,34 @@ static void settings_defaults(void)
         .volume = 70,
         .previews = 1,
         .step_goal = 8000,
-        .face_order = {FACE_DIGITAL, FACE_ANALOG, FACE_MODULAR, FACE_PHOTO},
-        .face_style = {0, 0, 0, 0},
+        .face_order = {FACE_DIGITAL, FACE_ANALOG, FACE_MODULAR, FACE_PHOTO, FACE_MINIMAL, FACE_CUSTOM},
+        .face_style = {0},
         .grid_launcher = 0,
     };
 }
 
+/* Keeps v5/v6 settings across an OTA upgrade; new fields take their defaults. */
+static bool settings_upgrade(void)
+{
+    static const uint8_t old_faces[] = {FACE_DIGITAL, FACE_ANALOG,  FACE_PHOTO,  FACE_DIGITAL,
+                                        FACE_DIGITAL, FACE_MODULAR, FACE_MINIMAL, FACE_CUSTOM};
+    settings_t old;
+    if (!svc_kv_load("cfg", &old, CFG_OLD_SIZE) || (old.version != 5 && old.version != 6)) return false;
+    settings_defaults();
+    memcpy(&CFG, &old, CFG_OLD_SIZE);
+    CFG.version = CFG_VERSION;
+    if (old.version == 5) CFG.custom_face = 0;
+    CFG.face = old.face < sizeof(old_faces) ? old_faces[old.face] : FACE_DIGITAL;
+    if (CFG.comp_left == 4) CFG.comp_left = COMP_NONE;
+    if (CFG.comp_right == 4) CFG.comp_right = COMP_NONE;
+    return true;
+}
+
 void settings_load(void)
 {
-    if (!svc_kv_load("cfg", &CFG, sizeof(CFG)) || CFG.version != CFG_VERSION) settings_defaults();
+    if ((!svc_kv_load("cfg", &CFG, sizeof(CFG)) || CFG.version != CFG_VERSION) && !settings_upgrade()) {
+        settings_defaults();
+    }
     if (CFG.brightness < 5) CFG.brightness = 5;
     if (CFG.timeout_s < 5) CFG.timeout_s = 5;
     if (CFG.face >= FACE_COUNT) CFG.face = FACE_DIGITAL;
@@ -226,6 +253,60 @@ void macro_fire(int index)
     case MACRO_TEXT: svc_hid_text(m->text); break;
     case MACRO_MEDIA: svc_hid_consumer(m->usage); break;
     }
+}
+
+/* ----------------------------------------------------------- custom faces */
+
+typedef struct {
+    uint8_t count;
+    custom_face_t items[CUSTOM_FACE_MAX];
+} custom_faces_blob_t;
+
+custom_face_t CUSTOM_FACES[CUSTOM_FACE_MAX];
+int CUSTOM_FACE_COUNT;
+uint32_t CUSTOM_FACES_GEN;
+
+static void custom_faces_defaults(void)
+{
+    CUSTOM_FACE_COUNT = 2;
+    memset(CUSTOM_FACES, 0, sizeof(CUSTOM_FACES));
+    CUSTOM_FACES[0] = (custom_face_t){
+        .name = "Midnight", .style = CF_STYLE_MINIMAL, .accent = 0,
+        .photo_idx = 0, .show_date = 1, .show_comps = 0, .bg_hex = 0x071224,
+    };
+    CUSTOM_FACES[1] = (custom_face_t){
+        .name = "Ember", .style = CF_STYLE_COMPACT, .accent = 4,
+        .photo_idx = 0, .show_date = 1, .show_comps = 1, .bg_hex = 0x1A0B0A,
+    };
+}
+
+void custom_faces_load(void)
+{
+    custom_faces_blob_t b;
+    if (!svc_kv_load("cfaces", &b, sizeof(b)) || b.count == 0 || b.count > CUSTOM_FACE_MAX) {
+        custom_faces_defaults();
+        return;
+    }
+    CUSTOM_FACE_COUNT = b.count;
+    memcpy(CUSTOM_FACES, b.items, sizeof(CUSTOM_FACES));
+    for (int i = 0; i < CUSTOM_FACE_COUNT; i++) {
+        CUSTOM_FACES[i].name[sizeof(CUSTOM_FACES[i].name) - 1] = 0;
+        if (CUSTOM_FACES[i].style >= CF_STYLE_COUNT) CUSTOM_FACES[i].style = CF_STYLE_DIGITAL;
+        if (CUSTOM_FACES[i].accent >= 6) CUSTOM_FACES[i].accent = 0;
+    }
+    if (CFG.custom_face >= CUSTOM_FACE_COUNT) CFG.custom_face = 0;
+}
+
+void custom_faces_changed(void)
+{
+    if (CUSTOM_FACE_COUNT < 1) custom_faces_defaults();
+    if (CUSTOM_FACE_COUNT > CUSTOM_FACE_MAX) CUSTOM_FACE_COUNT = CUSTOM_FACE_MAX;
+    if (CFG.custom_face >= CUSTOM_FACE_COUNT) CFG.custom_face = 0;
+    custom_faces_blob_t b = {.count = (uint8_t)CUSTOM_FACE_COUNT};
+    memcpy(b.items, CUSTOM_FACES, sizeof(b.items));
+    svc_kv_save("cfaces", &b, sizeof(b));
+    CUSTOM_FACES_GEN++;
+    bus_emit(EVT_SETTINGS, NULL);
 }
 
 /* -------------------------------------------------------------- formatting */

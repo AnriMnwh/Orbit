@@ -297,9 +297,9 @@ the watch, and after every `set` (even one that changed nothing), so the app is
 corrected at once if a change did not take. The phone changes one at a time,
 though several in one `set` are all applied. `aod` is 0 off, 1 clock, 2
 photos; `timeout` is seconds; `goal` is steps a day; `face` is 0 Digital,
-1 Analog, 2 Modular, 3 Photo; `compL`/`compR` are 0..6 (Battery, Steps,
+1 Analog, 2 Modular, 3 Photo, 4 Minimal, 5 Custom; `compL`/`compR` are 0..6 (Battery, Steps,
 Weather, Day, Pet, Agenda, None); `faces` is the ordered list of visible face
-indices (1..4 unique); `styles` is the 0..2 style per face; `grid` toggles the
+indices (1..6 unique); `styles` is the 0..2 style per face; `grid` toggles the
 3-column icon app launcher. Limits: brightness 5 to 100, timeout 5 to 120,
 goal 1000 to 60000.
 

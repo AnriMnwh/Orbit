@@ -246,8 +246,9 @@ data class WatchConfig(
     )
 
     companion object {
-        val FACES = listOf("Digital", "Analog", "Modular", "Photo")
+        val FACES = listOf("Digital", "Analog", "Modular", "Photo", "Minimal", "Custom")
         val COMPLICATIONS = listOf("Battery", "Steps", "Weather", "Day", "Pet", "Agenda", "None")
+        /** Faces without variants (Minimal, Custom) fall back to a single "Default" style. */
         val FACE_STYLES = listOf(
             listOf("Stacked", "Compact", "Minimal"),
             listOf("Classic", "Minimal", "Sport"),

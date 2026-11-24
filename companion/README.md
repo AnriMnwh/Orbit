@@ -43,9 +43,9 @@ cd companion\android
 adb install -r "$env:USERPROFILE\.orbit-build-app\app\outputs\apk\debug\app-debug.apk"
 ```
 
-Build output goes to `%USERPROFILE%\.orbit-build-app`, outside OneDrive, for
-the same reason the firmware's does. Needs the Android SDK (platform 37) and
-JDK 21, both already on this PC.
+Build output goes to `%USERPROFILE%\.orbit-build-app` (outside cloud-synced
+folders to avoid file-locking issues during Gradle builds). Requires the Android
+SDK (compileSdk 37) and JDK 21.
 
 On the phone: open Orbit, allow Bluetooth, tap **Pair watch** and pick
 "Orbit", then grant notification access. The watch must be in its normal

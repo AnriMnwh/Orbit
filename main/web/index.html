@@ -61,6 +61,16 @@
   </section>
 
   <section>
+    <h2>Custom watch faces</h2>
+    <p class="note" style="margin-top:0">Build up to six custom faces for the <b>Custom</b> watch face slot. Tap the Custom face on the watch to cycle between them.</p>
+    <div id="faces"></div>
+    <div class="row">
+      <button id="faceAdd" class="sec">Add face</button>
+      <button id="faceSave">Save faces</button>
+    </div>
+  </section>
+
+  <section>
     <h2>Keys</h2>
     <p class="note" style="margin-top:0">Fourteen buttons across two pages. The first of each page sits in the middle. Leave a label empty to hide a button.</p>
     <div id="macros"></div>
@@ -280,9 +290,63 @@ $('fwBtn').onclick = () => {
   xhr.send(file);
 };
 
+// ---- custom watch faces
+const FSTYLES = ['Digital', 'Compact', 'Analog', 'Minimal'];
+const FACCENTS = ['Sky', 'Mint', 'Rose', 'Violet', 'Peach', 'Sun'];
+let faceList = [];
+
+function faceRow(f, i) {
+  const styles = FSTYLES.map((s, k) => `<option value="${k}" ${f.style == k ? 'selected' : ''}>${s}</option>`).join('');
+  const accs = FACCENTS.map((a, k) => `<option value="${k}" ${f.accent == k ? 'selected' : ''}>${a}</option>`).join('');
+  return `<div class="macro" data-fi="${i}">
+    <div class="row"><input data-ff="name" maxlength="15" placeholder="Face ${i + 1}" value="${esc(f.name || '')}">
+      <select data-ff="style">${styles}</select></div>
+    <div class="row">
+      <div><label>Accent</label><select data-ff="accent">${accs}</select></div>
+      <div><label>Background</label><input data-ff="bg" type="color" value="${esc(f.bg || '#000000')}" style="height:40px;padding:2px"></div>
+      <div><label>Photo # (0=colour)</label><input data-ff="photo_idx" type="number" min="0" max="60" value="${f.photo_idx || 0}"></div>
+    </div>
+    <div class="mods">
+      <label><input type="checkbox" data-ff="show_date" ${f.show_date ? 'checked' : ''}>Date</label>
+      <label><input type="checkbox" data-ff="show_comps" ${f.show_comps ? 'checked' : ''}>Rings</label>
+      ${faceList.length > 1 ? `<button type="button" class="sec" data-fdel="${i}" style="width:auto;padding:4px 10px;margin:0">Remove</button>` : ''}
+    </div></div>`;
+}
+function renderFaces() {
+  $('faces').innerHTML = faceList.map(faceRow).join('');
+  $('faces').querySelectorAll('[data-fdel]').forEach(b => b.onclick = () => { faceList.splice(+b.dataset.fdel, 1); renderFaces(); });
+  $('faceAdd').disabled = faceList.length >= 6;
+}
+function readFaces() {
+  return [...$('faces').querySelectorAll('[data-fi]')].map(r => ({
+    name: r.querySelector('[data-ff=name]').value.trim() || 'Custom',
+    style: +r.querySelector('[data-ff=style]').value,
+    accent: +r.querySelector('[data-ff=accent]').value,
+    bg: r.querySelector('[data-ff=bg]').value || '#000000',
+    photo_idx: +r.querySelector('[data-ff=photo_idx]').value || 0,
+    show_date: r.querySelector('[data-ff=show_date]').checked,
+    show_comps: r.querySelector('[data-ff=show_comps]').checked,
+  }));
+}
+async function faces() {
+  faceList = await api('/api/faces');
+  renderFaces();
+}
+$('faceAdd').onclick = () => {
+  faceList = readFaces();
+  if (faceList.length >= 6) return;
+  faceList.push({ name: 'Face ' + (faceList.length + 1), style: 0, accent: faceList.length % 6, bg: '#000000', photo_idx: 0, show_date: true, show_comps: true });
+  renderFaces();
+};
+$('faceSave').onclick = async () => {
+  faceList = readFaces();
+  await post('/api/faces', faceList);
+  say('Custom faces saved');
+};
+
 // The browser knows the right time and time zone, so hand both to the watch.
 post('/api/time', { epoch: Math.floor(Date.now() / 1000), tz: -new Date().getTimezoneOffset() }).catch(() => {});
-status(); scan(); photos().catch(() => {}); macros().catch(() => {});
+status(); scan(); photos().catch(() => {}); faces().catch(() => {}); macros().catch(() => {});
 setInterval(status, 5000);
 </script>
 </body>
