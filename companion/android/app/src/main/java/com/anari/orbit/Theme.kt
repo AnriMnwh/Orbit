@@ -51,9 +51,6 @@ object Brand {
     val Warn = Color(0xFFFFC53D)
     val Bad = Color(0xFFFF5D5D)
 
-    /** The one colour the watch's ZZZ app keeps for its main number. */
-    val BatteryCharge = Color(0xFFFFD60A)
-
     /** Each accent as the watch shows it on black, and a deeper tone that holds up on a light ground. */
     val Accents = listOf(
         Color(0xFFA8C7FA) to Color(0xFF2F6FE6), // sky

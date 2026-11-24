@@ -403,7 +403,7 @@ static void modular_refresh(face_t *f)
                 time_t local = next->start + (time_t)CFG.tz_minutes * 60;
                 struct tm lt;
                 gmtime_r(&local, &lt);
-                char buf[48], clk[16];
+                char clk[16], buf[sizeof(clk) + 2 + sizeof(next->place)];
                 fmt_clock(clk, sizeof(clk), &lt, false);
                 snprintf(buf, sizeof(buf), "%s%s%s", clk, next->place[0] ? "  " : "", next->place);
                 lv_label_set_text(f->mod_sub, buf);

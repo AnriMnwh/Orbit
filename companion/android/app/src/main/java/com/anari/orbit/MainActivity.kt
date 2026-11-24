@@ -52,10 +52,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.anari.orbit.link.BatteryCharge
 import com.anari.orbit.link.Link
 import com.anari.orbit.link.StepLog
-import com.anari.orbit.link.VisionChoice
 import com.anari.orbit.link.WatchConfig
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -98,8 +96,6 @@ private fun demoWatch(accent: Int) = WatchState(
     weather = "11°, light rain",
     nextEvent = "Band practice, Wed 19:00",
     steps = listOf(5200, 8100, 3900, 11200, 6400, 7300, 2850).mapIndexed { i, n -> LocalDate.now().minusDays(6L - i) to n },
-    vision = VisionChoice(element = 4, region = 4),
-    batteryCharge = BatteryCharge(charge = 182, fullAt = System.currentTimeMillis() / 1000 + 58 * 360, done = 5),
 )
 
 private enum class Tab(val label: String, val icon: Int) {

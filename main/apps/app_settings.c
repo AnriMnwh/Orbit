@@ -1121,6 +1121,7 @@ static void begin(lv_obj_t *scr)
 }
 
 static page_fn pending_page;
+extern const app_t app_settings;
 
 void settings_open_page(const char *page)
 {
