@@ -16,9 +16,11 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 
+#include "json_util.h"
 #include "platform.h"
 
 static const char *TAG = "apple";
@@ -98,6 +100,12 @@ static msg_t *new_msg(int kind)
     msg_t *m = calloc(1, sizeof(*m));
     if (m) m->kind = kind;
     return m;
+}
+
+/* ui_post leaves the message with us when the UI could not take it. */
+static void post(msg_t *m)
+{
+    if (!ui_post(apply, m)) free(m);
 }
 
 /* ---------------------------------------------------------------- helpers */
@@ -260,7 +268,7 @@ void apple_stop(void)
 {
     if (call_ringing) {
         msg_t *m = new_msg(K_CALL);
-        if (m) ui_post(apply, m);
+        if (m) post(m);
     }
     conn = BLE_HS_CONN_HANDLE_NONE;
     state = ST_IDLE;
@@ -275,6 +283,11 @@ bool apple_active(void)
 
 /* ---------------------------------------------------------- notifications */
 
+/* iOS can stop part-way through a details reply, which would leave `fetching`
+ * set for good. A reply that is overdue is given up on so the queue moves on. */
+#define FETCH_TIMEOUT_US (5 * 1000 * 1000)
+static int64_t fetch_started_us;
+
 static void fetch_next(void)
 {
     if (fetching || q_count == 0 || !have_ancs) return;
@@ -284,7 +297,16 @@ static void fetch_next(void)
                      0, 1, 47, 0, 3, 159, 0};
     data_len = 0;
     fetching = ble_gattc_write_flat(conn, h_control, cmd, sizeof(cmd), wrote, NULL) == 0;
-    if (!fetching) q_head = (q_head + 1) % QUEUE, q_count--;
+    if (fetching) fetch_started_us = esp_timer_get_time();
+    else q_head = (q_head + 1) % QUEUE, q_count--;
+}
+
+static void fetch_expire(void)
+{
+    if (!fetching || esp_timer_get_time() - fetch_started_us < FETCH_TIMEOUT_US) return;
+    ESP_LOGW(TAG, "notification details never completed; skipping it");
+    fetching = false;
+    q_head = (q_head + 1) % QUEUE, q_count--;
 }
 
 static void app_label(const char *bundle, char *out, size_t len)
@@ -307,9 +329,7 @@ static void app_label(const char *bundle, char *out, size_t len)
     /* Otherwise the last part of the identifier, in capitals. */
     const char *dot = strrchr(bundle, '.');
     strlcpy(out, dot ? dot + 1 : bundle, len);
-    for (char *p = out; *p; p++) {
-        if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
-    }
+    ascii_upper(out);
 }
 
 /* Returns true once the reply in data_buf is complete (and consumed). */
@@ -320,11 +340,16 @@ static bool parse_details(void)
     size_t pos = 5;
     for (int i = 0; i < 3; i++) {
         if (pos + 3 > data_len) return false;
+        uint8_t id = data_buf[pos];
         size_t n = data_buf[pos + 1] | ((size_t)data_buf[pos + 2] << 8);
         pos += 3;
         if (pos + n > data_len) return false;
-        size_t keep = n < sizeof(fields[0]) - 1 ? n : sizeof(fields[0]) - 1;
-        memcpy(fields[i], data_buf + pos, keep);
+        /* Attributes are placed by their ANCS id (0 app, 1 title, 3 message), not by position. */
+        int slot = id == 0 ? 0 : id == 1 ? 1 : id == 3 ? 2 : -1;
+        if (slot >= 0) {
+            size_t keep = n < sizeof(fields[0]) - 1 ? n : sizeof(fields[0]) - 1;
+            memcpy(fields[slot], data_buf + pos, keep);
+        }
         pos += n;
     }
     uint32_t uid = data_buf[1] | (data_buf[2] << 8) | (data_buf[3] << 16) | ((uint32_t)data_buf[4] << 24);
@@ -335,7 +360,7 @@ static bool parse_details(void)
         if (m) {
             m->call.active = true;
             strlcpy(m->call.who, fields[1], sizeof(m->call.who));
-            ui_post(apply, m);
+            post(m);
         }
     } else {
         msg_t *m = new_msg(K_NOTIFY);
@@ -345,7 +370,7 @@ static bool parse_details(void)
             app_label(fields[0], m->notif.app, sizeof(m->notif.app));
             strlcpy(m->notif.title, fields[1], sizeof(m->notif.title));
             strlcpy(m->notif.body, fields[2], sizeof(m->notif.body));
-            ui_post(apply, m);
+            post(m);
         }
     }
     return true;
@@ -362,18 +387,19 @@ static void on_source(const uint8_t *d, size_t len)
         if (call_ringing && uid == call_uid) {
             call_ringing = false;
             msg_t *m = new_msg(K_CALL);
-            if (m) ui_post(apply, m);
+            if (m) post(m);
         } else {
             msg_t *m = new_msg(K_REMOVE);
             if (m) {
                 m->notif.id = uid;
-                ui_post(apply, m);
+                post(m);
             }
         }
         return;
     }
     /* Skip silent ones and the backlog iOS replays when it connects. */
     if (event != 0 || (flags & 0x05)) return;
+    fetch_expire();
     if (is_call) call_uid = uid, call_ringing = true;
     if (q_count < QUEUE) {
         int slot = (q_head + q_count) % QUEUE;
@@ -433,7 +459,7 @@ static void on_entity(const uint8_t *d, size_t len)
             m->media_mask = M_VOLUME, m->media.volume = (int)(strtod(value, NULL) * 100.0 + 0.5);
         }
     }
-    if (m->media_mask) ui_post(apply, m);
+    if (m->media_mask) post(m);
     else free(m);
 }
 

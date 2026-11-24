@@ -43,6 +43,9 @@ void ble_store_config_init(void);
 
 static uint16_t conn = BLE_HS_CONN_HANDLE_NONE;
 static bool synced, keys_mode, want_keys, encrypted, gb_seen, app_mode;
+/* The battery as the UI last reported it, for Bluetooth's task to read. */
+static volatile int batt_pct = -1;
+static volatile bool batt_chg, batt_sub; /* batt_sub: the phone listens for battery changes */
 static peer_kind_t peer = PEER_NONE;
 static char peer_name[32];
 static uint8_t keys_addr[6];
@@ -72,7 +75,7 @@ static void publish(void)
     l->keys_mode = want_keys;
     l->app = app_mode && conn != BLE_HS_CONN_HANDLE_NONE;
     if (conn != BLE_HS_CONN_HANDLE_NONE) strlcpy(l->name, peer_name, sizeof(l->name));
-    ui_post(link_apply, l);
+    if (!ui_post(link_apply, l)) free(l);
 }
 
 bool ble_phone_is_android(void)
@@ -135,7 +138,8 @@ static int info_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *c
 {
     if ((intptr_t)arg == 0) return reply(ctxt, PNP_ID, sizeof(PNP_ID));
     if ((intptr_t)arg == 1) return reply(ctxt, "Orbit", 5);
-    uint8_t level = (uint8_t)(S.batt.percent < 0 ? 100 : S.batt.percent);
+    int percent = batt_pct;
+    uint8_t level = (uint8_t)(percent < 0 ? 100 : percent);
     return reply(ctxt, &level, 1);
 }
 
@@ -156,7 +160,7 @@ static int nus_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ct
     return 0;
 }
 
-static void notify(uint16_t handle, const void *data, size_t len);
+static bool notify(uint16_t handle, const void *data, size_t len);
 static int bulk_access(uint16_t c, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg);
 
 #define ENC_READ (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC)
@@ -209,11 +213,21 @@ static const struct ble_gatt_svc_def SERVICES[] = {
     {0},
 };
 
-static void notify(uint16_t handle, const void *data, size_t len)
+/* HID reports go out from the keyboard task, which can afford to wait a moment
+ * when Bluetooth has no buffer free. Returns false if the report was lost. */
+static bool notify(uint16_t handle, const void *data, size_t len)
 {
-    if (conn == BLE_HS_CONN_HANDLE_NONE) return;
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, (uint16_t)len);
-    if (om) ble_gatts_notify_custom(conn, handle, om);
+    if (conn == BLE_HS_CONN_HANDLE_NONE) return false;
+    int rc = BLE_HS_ENOMEM;
+    for (int tries = 0; tries < 20; tries++) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(data, (uint16_t)len);
+        rc = om ? ble_gatts_notify_custom(conn, handle, om) : BLE_HS_ENOMEM;
+        if (rc == 0) return true;
+        if (rc != BLE_HS_ENOMEM && rc != BLE_HS_EBUSY) break;
+        vTaskDelay(pdMS_TO_TICKS(8));
+    }
+    ESP_LOGW(TAG, "key report not sent (%d)", rc);
+    return false;
 }
 
 /* ---- paced sending for the phone link ----
@@ -235,10 +249,16 @@ static void tx_push(uint16_t handle, const void *data, size_t len, char tail, bo
     size_t total = len + (tail ? 1 : 0);
     if (!tx_queue || conn == BLE_HS_CONN_HANDLE_NONE || !len || total > UINT16_MAX) return;
     tx_item_t item = {.handle = handle, .len = (uint16_t)total, .data = malloc(total)};
-    if (!item.data) return;
+    if (!item.data) {
+        ESP_LOGW(TAG, "no memory to send %u bytes", (unsigned)total);
+        return;
+    }
     memcpy(item.data, data, len);
     if (tail) item.data[len] = (uint8_t)tail;
-    if (xQueueSend(tx_queue, &item, wait ? pdMS_TO_TICKS(4000) : 0) != pdTRUE) free(item.data);
+    if (xQueueSend(tx_queue, &item, wait ? pdMS_TO_TICKS(4000) : 0) != pdTRUE) {
+        ESP_LOGW(TAG, "send queue full: dropped %u bytes", (unsigned)total);
+        free(item.data);
+    }
 }
 
 static void tx_task(void *arg)
@@ -257,11 +277,35 @@ static void tx_task(void *arg)
                 sent = om && ble_gatts_notify_custom(conn, item.handle, om) == 0;
                 if (!sent) vTaskDelay(pdMS_TO_TICKS(8)); /* no buffer free yet: let the radio drain */
             }
-            if (!sent) break;
+            if (!sent) {
+                if (conn != BLE_HS_CONN_HANDLE_NONE) {
+                    ESP_LOGW(TAG, "radio stayed full: dropped the last %u bytes of a %u byte message", (unsigned)(item.len - off),
+                             (unsigned)item.len);
+                }
+                break;
+            }
             off += n;
         }
         free(item.data);
     }
+}
+
+/* The UI's battery reading changed (LVGL thread). Bluetooth's own task reads
+ * the copy kept here instead of `S`, and a connected phone subscribed to the
+ * Battery Service is told. */
+void ble_battery(int percent, bool charging)
+{
+    bool changed = percent != batt_pct;
+    batt_pct = percent, batt_chg = charging;
+    if (changed && batt_sub) {
+        uint8_t level = (uint8_t)(percent < 0 ? 100 : percent);
+        tx_push(batt_handle, &level, 1, 0, false);
+    }
+}
+
+void ble_battery_get(int *percent, bool *charging)
+{
+    *percent = batt_pct, *charging = batt_chg;
 }
 
 /* Album art and speech from the Orbit phone app arrive here as binary frames. */
@@ -500,8 +544,13 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
             advertise();
             break;
         }
+        if (conn != BLE_HS_CONN_HANDLE_NONE) {
+            /* The watch serves one phone at a time: a second link must not take over the first one's state. */
+            ble_gap_terminate(ev->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            break;
+        }
         conn = ev->connect.conn_handle;
-        encrypted = false, gb_seen = false;
+        encrypted = false, gb_seen = false, batt_sub = false;
         peer = keys_mode ? PEER_KEYS : PEER_NONE;
         peer_name[0] = 0;
         publish();
@@ -510,8 +559,9 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
+        if (ev->disconnect.conn.conn_handle != conn) break; /* not the link we are serving */
         conn = BLE_HS_CONN_HANDLE_NONE;
-        encrypted = false, gb_seen = false, app_mode = false;
+        encrypted = false, gb_seen = false, app_mode = false, batt_sub = false;
         apple_stop();
         link_reset();
         gb_connected(false);
@@ -520,7 +570,7 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
         break;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
-        if (ev->enc_change.status != 0) break;
+        if (ev->enc_change.conn_handle != conn || ev->enc_change.status != 0) break;
         encrypted = true;
         link_encrypted(); /* the Orbit app's hello may be waiting for this */
         ble_gattc_read_by_uuid(conn, 1, 0xFFFF, BLE_UUID16_DECLARE(0x2A00), name_read, NULL);
@@ -533,7 +583,9 @@ static int on_gap(struct ble_gap_event *ev, void *arg)
         return BLE_GAP_REPEAT_PAIRING_RETRY;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
+        if (ev->subscribe.conn_handle != conn) break;
         if (ev->subscribe.attr_handle == nus_tx_handle) gb_connected(ev->subscribe.cur_notify);
+        else if (ev->subscribe.attr_handle == batt_handle) batt_sub = ev->subscribe.cur_notify;
         break;
 
     case BLE_GAP_EVENT_NOTIFY_RX: {
@@ -569,7 +621,7 @@ static void on_sync(void)
     esp_read_mac(keys_addr, ESP_MAC_BT);
     keys_addr[0] ^= 0x5A;
     keys_addr[5] |= 0xC0;
-    ble_hs_id_set_rnd(keys_addr); /* switched to the MIDI address when that identity is active */
+    ble_hs_id_set_rnd(keys_addr);
 
     ble_gatts_find_svc(&U_NUS.u, &nus_svc);
     ble_gatts_find_svc(BLE_UUID16_DECLARE(0x1812), &hid_svc);
@@ -598,12 +650,24 @@ static void switch_persona(void);
 void svc_notif_reply(uint32_t id, const char *text)
 {
     if (!ble_phone_is_android()) return;
-    /* The text goes inside a JSON string, so quotes and backslashes are escaped. */
+    /* The text goes inside a JSON string, so quotes and backslashes are
+     * escaped, and it is cut only between whole UTF-8 characters: half a
+     * character would make the phone reject the entire line. */
     char safe[96], json[176];
     size_t n = 0;
-    for (const char *p = text; *p && n < sizeof(safe) - 2; p++) {
-        if (*p == '"' || *p == '\\') safe[n++] = '\\';
-        if ((unsigned char)*p >= 0x20) safe[n++] = *p;
+    for (const char *p = text; *p;) {
+        unsigned char c = (unsigned char)*p;
+        size_t chars = c < 0x80 ? 1 : (c >= 0xF0 ? 4 : (c >= 0xE0 ? 3 : (c >= 0xC0 ? 2 : 1)));
+        if (c < 0x20) {
+            p++;
+            continue;
+        }
+        if (strnlen(p, chars) < chars) break; /* the text ends inside a character */
+        size_t need = chars + (c == '"' || c == '\\' ? 1 : 0);
+        if (n + need > sizeof(safe) - 1) break;
+        if (need > chars) safe[n++] = '\\';
+        memcpy(safe + n, p, chars);
+        n += chars, p += chars;
     }
     safe[n] = 0;
     snprintf(json, sizeof(json), "{\"t\":\"notify\",\"n\":\"REPLY\",\"id\":%u,\"msg\":\"%s\"}", (unsigned)id, safe);

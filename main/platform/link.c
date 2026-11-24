@@ -163,6 +163,7 @@ static void art_drop(void *arg)
     LV_UNUSED(arg);
     free(art_px);
     art_px = NULL;
+    art_dsc.data = NULL; /* nothing may draw from the freed picture */
     art_key[0] = track_key[0] = 0;
     S.media.has_art = false;
     S.media.shuffle = S.media.repeat = false;
@@ -234,7 +235,12 @@ static void art_task(void *arg)
         ok = r && r->px;
         if (ok) {
             strlcpy(r->key, job.key, sizeof(r->key));
-            ui_post(art_ready, r); /* the screen's thread owns it from here */
+            if (!ui_post(art_ready, r)) { /* the screen's thread owns it only if it took it */
+                free(r->px);
+                free(r);
+                ok = false;
+                ESP_LOGW(TAG, "album art %s dropped: UI busy", job.key);
+            }
         } else {
             free(r);
             ESP_LOGW(TAG, "album art %s rejected", job.key);
@@ -343,7 +349,7 @@ void link_art_key(const char *key)
     char *k = malloc(KEY_LEN);
     if (!k) return;
     key_copy(k, key);
-    ui_post(art_track, k);
+    if (!ui_post(art_track, k)) free(k);
 }
 
 /* -------------------------------------------------------------- assistant */
@@ -392,6 +398,12 @@ static void events_flush(void)
 {
     event_t e;
     while (events && xQueueReceive(events, &e, 0) == pdTRUE) event_free(&e);
+}
+
+static void speech_drop(void)
+{
+    free(speech);
+    speech = NULL;
 }
 
 static void speech_begin(cJSON *msg)
@@ -470,8 +482,10 @@ static void agent_message(cJSON *msg)
     } else if (strcmp(what, "reply") == 0) {
         event_push(EV_REPLY, 0, cJSON_IsTrue(cJSON_GetObjectItem(msg, "more")), t, NULL);
     } else if (strcmp(what, "error") == 0) {
+        speech_drop();
         event_push(EV_ERROR, 0, false, t, NULL);
     } else if (strcmp(what, "done") == 0) {
+        speech_drop(); /* a stream that never finished must not keep its buffer */
         event_push(EV_DONE, 0, false, NULL, NULL);
     } else if (strcmp(what, "tool") == 0) {
         cJSON *name = cJSON_GetObjectItem(msg, "name"), *id = cJSON_GetObjectItem(msg, "id");
@@ -633,7 +647,9 @@ bool link_agent_ask(const int16_t *pcm, size_t samples, volatile bool *cancelled
             case EV_HEARD: agent_publish(AGENT_THINKING, e.text, "", NULL); break;
             case EV_TOOL: answer_tool(&e); break;
             case EV_REPLY:
-                strlcat(reply, e.text ? e.text : "", sizeof(reply));
+                if (strlcat(reply, e.text ? e.text : "", sizeof(reply)) >= sizeof(reply)) {
+                    ESP_LOGW(TAG, "assistant reply is longer than %d bytes and was cut short", (int)sizeof(reply) - 1);
+                }
                 if (!e.more) agent_publish(AGENT_SPEAKING, NULL, reply, NULL);
                 break;
             case EV_SPEECH:
@@ -684,5 +700,6 @@ void link_reset(void)
     rx_drop(&photo_rx);
     free(speech);
     speech = NULL;
+    events_flush(); /* nothing the phone said may outlive its connection */
     if (was) ui_post(art_drop, NULL);
 }

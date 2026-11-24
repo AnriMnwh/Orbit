@@ -3,8 +3,8 @@
 How the Orbit phone app and the watch talk over Bluetooth LE.
 
 Status: both sides of everything in this file are written and compile. The
-watch's hello lists ten names: `art`, `music2`, `agent`, `place`, `agenda`,
-`photos`, `cfg`, `act`, `replies`, `phone`. Nothing has run on a real watch,
+watch's hello lists twelve names: `art`, `music2`, `agent`, `place`, `agenda`,
+`photos`, `cfg`, `act`, `replies`, `phone`, `busy`, `day`. Nothing has run on a real watch,
 and the two sides have never talked to each other. One writer only: the app
 session edits this file; the firmware session asks for changes by message.
 
@@ -179,6 +179,9 @@ phone: GB({"t":"agent","n":"error","text":"No internet on the phone."})   instea
   `{"t":"agent","n":"tools","tools":[...]}` with the same JSON it gives OpenAI
   today, so the app never has to know what the watch can do.
 - A long `reply` comes as several lines with `"more":true` on all but the last.
+  The watch keeps at most 479 bytes of the joined text and cuts the rest, so
+  the app should keep a whole reply within that (it clips to 470).
+  `done` or `error` also ends any reply speech still waiting for frames.
 - `speak` is optional. Without it the watch shows the text only. `len` is the
   total of the frame payloads that follow, so the watch can reserve one buffer
   and play it when complete.
@@ -235,7 +238,8 @@ phone: GB({"t":"agenda","i":0,"n":2,"s":1794300000,"e":1794303600,"title":"Denti
 phone: GB({"t":"agenda","i":1,"n":2,"s":1794310000,"e":1794313600,"title":"Band practice","loc":"","allday":false})
 ```
 
-The next entries within two days, soonest first, at most eight, one to a line.
+The next entries within 30 days, soonest first, at most 64, one to a line
+(the watch's hello gives both limits as `agenda.days` and `agenda.max`; `n` above 64 is ignored).
 `i` is the entry's place in a list of `n`; a line with `i` 0 replaces the old
 list, and `"n":0` means there is nothing coming up. `s` and `e` are seconds
 since 1970 UTC. Titles are at most 40 characters and places 30. Sent on
@@ -299,7 +303,7 @@ though several in one `set` are all applied. `aod` is 0 off, 1 clock, 2
 photos; `timeout` is seconds; `goal` is steps a day; `face` is 0 Digital,
 1 Analog, 2 Modular, 3 Photo, 4 Minimal, 5 Custom; `compL`/`compR` are 0..6 (Battery, Steps,
 Weather, Day, Pet, Agenda, None); `faces` is the ordered list of visible face
-indices (1..6 unique); `styles` is the 0..2 style per face; `grid` toggles the
+indices (0..5, unique, as in `face`); `styles` is the 0..2 style per face; `grid` toggles the
 3-column icon app launcher. Limits: brightness 5 to 100, timeout 5 to 120,
 goal 1000 to 60000.
 

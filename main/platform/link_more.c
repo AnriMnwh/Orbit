@@ -27,21 +27,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "json_util.h"
 #include "platform.h"
 
 static const char *TAG = "link+";
-
-static const char *str(cJSON *j, const char *key)
-{
-    cJSON *v = cJSON_GetObjectItem(j, key);
-    return cJSON_IsString(v) ? v->valuestring : "";
-}
-
-static double num(cJSON *j, const char *key, double fallback)
-{
-    cJSON *v = cJSON_GetObjectItem(j, key);
-    return cJSON_IsNumber(v) ? v->valuedouble : fallback;
-}
 
 /* Copies text without cutting a UTF-8 character in half. */
 static void text_copy(char *out, size_t size, const char *in)
@@ -69,22 +58,22 @@ static void place_apply(void *arg)
 
 static void place_message(cJSON *msg)
 {
-    double lat = num(msg, "lat", NAN), lon = num(msg, "lon", NAN);
+    double lat = json_num(msg, "lat", NAN), lon = json_num(msg, "lon", NAN);
     if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) return;
     double *p = malloc(2 * sizeof(double));
     if (!p) return;
     p[0] = lat, p[1] = lon;
-    ui_post(place_apply, p);
+    if (!ui_post(place_apply, p)) free(p);
 }
 
 /* --------------------------------------------- agenda, busy days, one day */
 
 static void item_read(cJSON *msg, agenda_item_t *it)
 {
-    it->start = (time_t)num(msg, "s", 0), it->end = (time_t)num(msg, "e", 0);
+    it->start = (time_t)json_num(msg, "s", 0), it->end = (time_t)json_num(msg, "e", 0);
     it->all_day = cJSON_IsTrue(cJSON_GetObjectItem(msg, "allday"));
-    text_copy(it->title, sizeof(it->title), str(msg, "title"));
-    text_copy(it->place, sizeof(it->place), str(msg, "loc"));
+    text_copy(it->title, sizeof(it->title), json_str(msg, "title"));
+    text_copy(it->place, sizeof(it->place), json_str(msg, "loc"));
 }
 
 typedef struct {
@@ -112,11 +101,18 @@ static void agenda_apply(void *arg)
 
 static void agenda_message(cJSON *msg)
 {
+    int i = (int)json_num(msg, "i", 0), n = (int)json_num(msg, "n", 0);
+    /* The count is the phone's to state, but it has to make sense: 0 means an empty agenda, otherwise this
+     * line must be one of n and n must fit what the watch holds. */
+    if (n < 0 || n > AGENDA_MAX || (n > 0 && (i < 0 || i >= n))) {
+        ESP_LOGW(TAG, "agenda line %d of %d ignored", i, n);
+        return;
+    }
     agenda_msg_t *m = calloc(1, sizeof(*m));
     if (!m) return;
-    m->i = (int)num(msg, "i", 0), m->n = (int)num(msg, "n", 0);
+    m->i = i, m->n = n;
     item_read(msg, &m->item);
-    ui_post(agenda_apply, m);
+    if (!ui_post(agenda_apply, m)) free(m);
 }
 
 typedef struct {
@@ -141,7 +137,7 @@ static void busy_message(cJSON *msg)
 {
     int year = 0, month = 0;
     cJSON *days = cJSON_GetObjectItem(msg, "days"), *v;
-    if (!cJSON_IsArray(days) || sscanf(str(msg, "month"), "%d-%d", &year, &month) != 2) return;
+    if (!cJSON_IsArray(days) || sscanf(json_str(msg, "month"), "%d-%d", &year, &month) != 2) return;
     if (year < 2000 || year > 2199 || month < 1 || month > 12) return;
     busy_msg_t *m = calloc(1, sizeof(*m));
     if (!m) return;
@@ -149,7 +145,7 @@ static void busy_message(cJSON *msg)
     cJSON_ArrayForEach(v, days) {
         if (cJSON_IsNumber(v) && v->valueint >= 1 && v->valueint <= 31) m->days |= 1u << v->valueint;
     }
-    ui_post(busy_apply, m);
+    if (!ui_post(busy_apply, m)) free(m);
 }
 
 typedef struct {
@@ -179,13 +175,13 @@ static void day_message(cJSON *msg)
 {
     day_msg_t *m = calloc(1, sizeof(*m));
     if (!m) return;
-    if (sscanf(str(msg, "date"), "%d-%d-%d", &m->year, &m->month, &m->day) != 3) {
+    if (sscanf(json_str(msg, "date"), "%d-%d-%d", &m->year, &m->month, &m->day) != 3) {
         free(m);
         return;
     }
-    m->i = (int)num(msg, "i", 0), m->n = (int)num(msg, "n", 0);
+    m->i = (int)json_num(msg, "i", 0), m->n = (int)json_num(msg, "n", 0);
     item_read(msg, &m->item);
-    ui_post(day_apply, m);
+    if (!ui_post(day_apply, m)) free(m);
 }
 
 /* Called by the Calendar app, on the LVGL thread. */
@@ -231,7 +227,7 @@ static void replies_message(cJSON *msg)
         if (m->count >= REPLY_MAX) break;
         if (cJSON_IsString(v) && v->valuestring[0]) text_copy(m->list[m->count++], REPLY_LEN, v->valuestring);
     }
-    ui_post(replies_apply, m);
+    if (!ui_post(replies_apply, m)) free(m);
 }
 
 /* ---------------------------------------------------------- phone battery */
@@ -251,12 +247,12 @@ static void phone_apply(void *arg)
 
 static void phone_message(cJSON *msg)
 {
-    double bat = num(msg, "bat", NAN);
+    double bat = json_num(msg, "bat", NAN);
     if (!(bat >= 0 && bat <= 100)) return;
     phone_msg_t *m = calloc(1, sizeof(*m));
     if (!m) return;
     m->percent = (int)lround(bat), m->charging = cJSON_IsTrue(cJSON_GetObjectItem(msg, "chg"));
-    ui_post(phone_apply, m);
+    if (!ui_post(phone_apply, m)) free(m);
 }
 
 /* ------------------------------------------------- settings and step count
@@ -422,21 +418,28 @@ static void cfg_message(cJSON *msg)
     cJSON *v;
     cJSON_ArrayForEach(v, cJSON_GetObjectItem(msg, "set")) {
         if (!v->string) continue;
+        /* A key that cannot be stored is skipped, so one failure does not drop the keys after it. */
         if (cJSON_IsArray(v)) {
             cfg_msg_t *m = calloc(1, sizeof(*m));
-            if (!m) return;
+            if (!m) {
+                ESP_LOGW(TAG, "no memory for setting %.12s", v->string);
+                continue;
+            }
             strlcpy(m->key, v->string, sizeof(m->key));
             cJSON *item;
             cJSON_ArrayForEach(item, v) {
                 if (m->arr_len < FACE_COUNT && cJSON_IsNumber(item)) m->arr[m->arr_len++] = (uint8_t)item->valueint;
             }
-            ui_post(cfg_apply, m);
+            if (!ui_post(cfg_apply, m)) free(m);
         } else if (cJSON_IsBool(v) || cJSON_IsNumber(v)) {
             cfg_msg_t *m = calloc(1, sizeof(*m));
-            if (!m) return;
+            if (!m) {
+                ESP_LOGW(TAG, "no memory for setting %.12s", v->string);
+                continue;
+            }
             strlcpy(m->key, v->string, sizeof(m->key));
             m->value = cJSON_IsBool(v) ? cJSON_IsTrue(v) : (int)lround(v->valuedouble);
-            ui_post(cfg_apply, m);
+            if (!ui_post(cfg_apply, m)) free(m);
         }
     }
 }
@@ -506,11 +509,25 @@ bool more_photo_busy(void)
     return storing;
 }
 
+/* Removing a photo is a flash write, which must not stall Bluetooth's task,
+ * so it gets a short task of its own like adding one does. */
+static void photo_delete_task(void *arg)
+{
+    char *name = arg;
+    if (!photo_remove(name)) ESP_LOGW(TAG, "no photo called %.24s to delete", name);
+    free(name);
+    vTaskDelete(NULL);
+}
+
 static void photos_message(cJSON *msg)
 {
-    if (strcmp(str(msg, "n"), "delete") != 0) return;
-    /* One small flash write; quick enough to do here. */
-    if (!photo_remove(str(msg, "name"))) ESP_LOGW(TAG, "no photo called %.24s to delete", str(msg, "name"));
+    if (strcmp(json_str(msg, "n"), "delete") != 0) return;
+    char *name = strdup(json_str(msg, "name"));
+    if (!name) return;
+    if (xTaskCreate(photo_delete_task, "photo-rm", 4096, name, 2, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "no memory to delete photo %.24s", name);
+        free(name);
+    }
 }
 
 /* --------------------------------------------------------------- dispatch */
