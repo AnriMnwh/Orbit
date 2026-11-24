@@ -63,19 +63,22 @@ Orbit brings a smooth, Material You–styled Wear OS interface to the round 466�
 
 Download the latest release assets from the [**Releases**](https://github.com/AnriMnwh/Orbit/releases) page:
 
-1. **First-time USB flash** (requires [esptool](https://docs.espressif.com/projects/esptool/)):
+1. **First install over USB** (requires [esptool](https://docs.espressif.com/projects/esptool/)):
    ```bash
-   esptool --chip esp32s3 -p COM5 -b 460800 write_flash 0x0 orbit-v0.1.0-factory.bin
+   esptool --chip esp32s3 -p COM5 -b 460800 write_flash 0x0 orbit-v1.0.0-factory.bin
    ```
-   *(Replace `COM5` with your watch's serial port, e.g. `/dev/ttyACM0` on Linux/macOS. Hold BOOT while plugging in USB if flashing doesn't start automatically.)*
+   *(Replace `COM5` with your watch's serial port, e.g. `/dev/ttyACM0` on Linux or `/dev/cu.usbmodem*` on macOS. Hold BOOT while plugging in USB if flashing doesn't start automatically.)* The factory image is the whole start of the flash, so it also **erases settings, pairings and saved networks**; photos are kept.
 
-2. **Subsequent Wi-Fi OTA updates** (no USB cable needed):
+2. **Updating over Wi-Fi** (no USB cable needed; keeps everything):
    - On the watch: **Settings > System > Allow update**
-   - In your browser on the same Wi-Fi network: open `http://orbit.local` → **Update** → upload `orbit-v0.1.0-ota.bin`
-   - An OTA update keeps the watch's partition table. Watches first flashed before settings storage grew to 56 KB keep the original 24 KB until they are flashed once over USB; that flash moves every setting, pairing and saved network across by itself, and photos stay where they are.
+   - In your browser on the same Wi-Fi network: open `http://orbit.local` → **Update** → upload `orbit-v1.0.0-ota.bin`
+   - An OTA update keeps the watch's partition table. Watches first flashed before settings storage grew to 56 KB keep the original 24 KB until they are updated once over USB (below).
 
-3. **Android companion app** (optional):
-   - Install `orbit-companion-v0.1.0.apk` on Android 13+ (API 33+), grant Bluetooth and notification access, and tap **Pair watch**. Confirm the six-digit number shown on both the phone and the watch.
+3. **Updating over USB, keeping your settings**: unzip `orbit-v1.0.0-usb-update.zip` and run the command in its `FLASH.txt`. It writes only the bootloader, partition table and app, never the settings; on watches that still use the 24 KB settings area, the first boot moves every setting, pairing and saved network into the 56 KB one by itself.
+
+4. **Android companion app** (optional):
+   - Install `orbit-companion-v1.0.0.apk` on Android 13+ (API 33+), grant Bluetooth and notification access, and tap **Pair watch**. Confirm the six-digit number shown on both the phone and the watch.
+   - Coming from v0.1.0: uninstall it first. v1.0.0 is signed with the project's release key, while v0.1.0 was a debug build, so Android won't install one over the other.
 
 ## First-Time Setup & Web Setup Page
 

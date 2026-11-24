@@ -13,7 +13,7 @@
 
 #include "lvgl.h"
 
-#define ORBIT_VERSION "0.1.0"
+#define ORBIT_VERSION "1.0.0"
 #define SCR 466 /* round 466 x 466 panel */
 #define SCR_C (SCR / 2)
 
